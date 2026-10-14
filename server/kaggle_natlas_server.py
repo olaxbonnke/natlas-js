@@ -9,10 +9,15 @@
 # the notebook falls back to building llama.cpp's `llama-server` with CUDA, then to a prebuilt llama-cpp-python wheel.
 # The model is always served under the name **`n-atlas`**, which is what natlas-js and the playground send.
 #
+# **Security:** the engine listens on 127.0.0.1 only. A small authenticating reverse proxy on port 8080 sits in
+# front of it and is the only thing the tunnel exposes: every request needs `Authorization: Bearer <NATLAS_API_KEY>`
+# except `GET /health`. Without the `NATLAS_API_KEY` secret the proxy runs open and prints a loud warning.
+#
 # **Before you run:** Settings → Accelerator → **GPU T4 x2** (or T4) · Settings → **Internet on**.
-# Optional: Add-ons → Secrets → `HF_TOKEN` (the GGUF is public, so the token is not required).
+# Add-ons → Secrets → `NATLAS_API_KEY` (a long random string; recommended). Optional: `HF_TOKEN` (the GGUF is
+# public, so the token is not required) and `NTFY_TOPIC`.
 # Then **Run All** (or Save Version → Save & Run All). The public URL is printed near the end and pushed to ntfy.
-# Paste it into Vercel as `NATLAS_BASE_URL`.
+# Paste it into Vercel as `NATLAS_BASE_URL`, with the same key as `NATLAS_API_KEY`.
 #
 # Full beginner guide: `server/README.md` in https://github.com/olaxbonnke/natlas-js
 #
@@ -89,7 +94,7 @@ def get_secret(name):
     return None
 
 HF_TOKEN = get_secret("HF_TOKEN")               # optional: the GGUF is public
-NATLAS_API_KEY = get_secret("NATLAS_API_KEY")   # optional: protects your public URL (llama.cpp backends only)
+NATLAS_API_KEY = (get_secret("NATLAS_API_KEY") or "").strip() or None  # protects the public URL (auth proxy)
 NTFY_TOPIC = get_secret("NTFY_TOPIC") or "natlas-olaxbonnke-1aeb3c69"  # status + URL pushed to https://ntfy.sh/<topic>
 
 def notify(message, title="N-ATLaS"):
@@ -122,14 +127,18 @@ except Exception as e:
     raise SystemExit("❌ No internet. Kaggle: Settings → Internet → On (needs a phone-verified account). " + str(e))
 
 notify(f"Notebook started on {GPU_NAME}; preferred backend {BACKEND}", "N-ATLaS status")
-print("API key protection:", "ON" if NATLAS_API_KEY else "off (anyone with the URL can use it)")
+if NATLAS_API_KEY:
+    print("🔒 API key protection: ON (callers must send Authorization: Bearer <NATLAS_API_KEY>)")
+else:
+    print("!" * 72 + "\n⚠️  WARNING: NATLAS_API_KEY secret not found. The public URL will be OPEN: anyone who\n"
+          "   finds it can use your GPU. Add-ons → Secrets → NATLAS_API_KEY, attach it, and re-run.\n" + "!" * 72)
 
 # %%
 # ---------------------------------------------------------------- 3. Backend A: Ollama (prebuilt CUDA, no compiling)
 OLLAMA_PORT = 11434
 OLLAMA_LOG = f"{LOG_DIR}/ollama.log"
 ollama_env = {**os.environ,
-              "OLLAMA_HOST": f"0.0.0.0:{OLLAMA_PORT}",
+              "OLLAMA_HOST": f"127.0.0.1:{OLLAMA_PORT}",  # local only: the auth proxy is the public door
               "OLLAMA_KEEP_ALIVE": "-1",            # never unload the model
               "OLLAMA_CONTEXT_LENGTH": str(CONTEXT),
               "OLLAMA_NUM_PARALLEL": str(PARALLEL),
@@ -295,13 +304,13 @@ def install_llama_cpp_python():
 def start_llama(active):
     log = open(f"{LOG_DIR}/server.log", "ab")
     if active == "llama-server":
-        cmd = [SERVER_BIN, "-m", MODEL_PATH, "--host", "0.0.0.0", "--port", str(LLAMA_PORT),
+        cmd = [SERVER_BIN, "-m", MODEL_PATH, "--host", "127.0.0.1", "--port", str(LLAMA_PORT),
                "-ngl", str(GPU_LAYERS), "-c", str(CONTEXT), "--parallel", str(PARALLEL),
                "--alias", MODEL_NAME, "--jinja"]
-        if NATLAS_API_KEY:
+        if NATLAS_API_KEY:  # defence in depth: the proxy checks the key and forwards the same header
             cmd += ["--api-key", NATLAS_API_KEY]
     else:
-        cmd = [sys.executable, "-m", "llama_cpp.server", "--model", MODEL_PATH, "--host", "0.0.0.0",
+        cmd = [sys.executable, "-m", "llama_cpp.server", "--model", MODEL_PATH, "--host", "127.0.0.1",
                "--port", str(LLAMA_PORT), "--n_gpu_layers", "-1", "--n_ctx", str(CONTEXT), "--model_alias", MODEL_NAME]
         if NATLAS_API_KEY:
             cmd += ["--api_key", NATLAS_API_KEY]
@@ -362,6 +371,138 @@ status, models = local("/v1/models")
 print("/v1/models →", [m.get("id") for m in models.get("data", [])])
 
 # %%
+# ---------------------------------------------------------------- 5b. Authenticating reverse proxy (the only public port)
+# aiohttp proxy on 0.0.0.0:8080 → the engine on 127.0.0.1. Requires "Authorization: Bearer <NATLAS_API_KEY>" on every
+# path except GET /health, streams responses chunk by chunk (SSE is never buffered), passes status codes through and
+# answers CORS preflights. Runs as its own process so the keep-alive loop can restart it.
+PROXY_PORT = 8080
+PROXY_FILE = f"{WORK_DIR}/natlas_proxy.py"
+PROXY_LOG = f"{LOG_DIR}/proxy.log"
+PROXY_SRC = r"""
+import asyncio, hmac, json, os, sys
+from aiohttp import web, ClientSession, ClientTimeout, TCPConnector, ClientError
+
+UPSTREAM = os.environ.get("NATLAS_UPSTREAM", "http://127.0.0.1:11434").rstrip("/")
+API_KEY = (os.environ.get("NATLAS_API_KEY") or "").strip()
+PORT = int(os.environ.get("NATLAS_PROXY_PORT", "8080"))
+HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "trailers",
+       "transfer-encoding", "upgrade", "host", "content-length"}
+CORS = {"Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, X-Requested-With",
+        "Access-Control-Max-Age": "86400"}
+
+def jerr(status, code, message):
+    return web.json_response({"error": {"message": message, "type": code, "code": code}}, status=status,
+                             headers={**CORS, "Cache-Control": "no-store"})
+
+def authorized(request):
+    if not API_KEY:
+        return True
+    auth = request.headers.get("Authorization", "")
+    scheme, _, token = auth.partition(" ")
+    return scheme.lower() == "bearer" and hmac.compare_digest(token.strip().encode(), API_KEY.encode())
+
+async def handle(request):
+    if request.method == "OPTIONS":
+        return web.Response(status=204, headers=CORS)
+    if request.method in ("GET", "HEAD") and request.path.rstrip("/") == "/health":
+        return web.json_response({"status": "ok"}, headers={**CORS, "Cache-Control": "no-store"})
+    if not authorized(request):
+        return jerr(401, "invalid_api_key", "Missing or invalid API key. Send Authorization: Bearer <NATLAS_API_KEY>.")
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP and k.lower() != "origin"}
+    body = await request.read()
+    session = request.app["session"]
+    try:
+        up = await session.request(request.method, UPSTREAM + request.rel_url.raw_path_qs, headers=headers,
+                                   data=body if body else None, allow_redirects=False)
+    except (ClientError, asyncio.TimeoutError, OSError) as e:
+        return jerr(502, "upstream_unavailable", f"N-ATLaS engine is not reachable ({type(e).__name__}).")
+    try:
+        resp = web.StreamResponse(status=up.status, reason=up.reason)
+        for k, v in up.headers.items():
+            if k.lower() not in HOP and not k.lower().startswith("access-control-"):
+                resp.headers.add(k, v)
+        resp.headers.update(CORS)
+        resp.headers["X-Accel-Buffering"] = "no"
+        resp.headers["Cache-Control"] = up.headers.get("Cache-Control", "no-cache")
+        await resp.prepare(request)
+        async for chunk in up.content.iter_any():  # forward each chunk as soon as it arrives
+            await resp.write(chunk)
+        await resp.write_eof()
+        return resp
+    except (ConnectionResetError, asyncio.CancelledError):
+        raise
+    finally:
+        up.release()
+
+async def on_startup(app):
+    app["session"] = ClientSession(connector=TCPConnector(limit=64), auto_decompress=False,
+                                   timeout=ClientTimeout(total=None, sock_connect=10, sock_read=900))
+
+async def on_cleanup(app):
+    await app["session"].close()
+
+def make_app():
+    app = web.Application(client_max_size=32 * 1024 ** 2)
+    app.router.add_route("*", "/{tail:.*}", handle)
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+    return app
+
+if __name__ == "__main__":
+    if not API_KEY:
+        print("!" * 72 + "\nWARNING: NATLAS_API_KEY is not set. The proxy is running OPEN (no auth).\n" + "!" * 72,
+              flush=True)
+    print(f"natlas proxy :{PORT} -> {UPSTREAM} (auth {'ON' if API_KEY else 'OFF'})", flush=True)
+    web.run_app(make_app(), host="0.0.0.0", port=PORT, access_log=None, print=None)
+"""
+
+try:
+    import aiohttp  # noqa: F401  (preinstalled on Kaggle and Colab)
+except ImportError:
+    sh(f"{sys.executable} -m pip install -q aiohttp", quiet=True)
+with open(PROXY_FILE, "w") as f:
+    f.write(PROXY_SRC)
+
+def start_proxy():
+    env = {**os.environ, "NATLAS_UPSTREAM": f"http://127.0.0.1:{PORT}", "NATLAS_PROXY_PORT": str(PROXY_PORT),
+           "NATLAS_API_KEY": NATLAS_API_KEY or ""}
+    proc = subprocess.Popen([sys.executable, PROXY_FILE], env=env, stdout=open(PROXY_LOG, "ab"),
+                            stderr=subprocess.STDOUT)
+    for _ in range(30):
+        if proc.poll() is not None:
+            print(open(PROXY_LOG, errors="ignore").read()[-3000:])
+            fail("Auth proxy exited. Log above.")
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{PROXY_PORT}/health", timeout=3) as r:
+                if r.status == 200:
+                    return proc
+        except Exception:
+            time.sleep(1)
+    fail("Auth proxy did not answer on :8080 in 30 s.")
+
+def proxy_status(path, key=None):
+    req = urllib.request.Request(f"http://127.0.0.1:{PROXY_PORT}{path}",
+                                 headers={"Authorization": f"Bearer {key}"} if key else {})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+import urllib.error
+proxy_proc = start_proxy()
+if NATLAS_API_KEY:
+    no_key, with_key = proxy_status("/v1/models"), proxy_status("/v1/models", NATLAS_API_KEY)
+    print(f"Proxy self-test: no key → {no_key}, with key → {with_key}")
+    if no_key != 401 or with_key != 200:
+        fail(f"Auth proxy self-test failed (no key {no_key}, with key {with_key}).")
+    print("✅ Auth proxy is up on :8080 and refuses requests without the key")
+else:
+    print("⚠️  Auth proxy is up on :8080 but OPEN (no NATLAS_API_KEY secret)")
+
+# %%
 # ---------------------------------------------------------------- 6. Smoke test in Yoruba (runs on the GPU, not the internet)
 t = time.time()
 _, out = local("/v1/chat/completions", {
@@ -412,9 +553,8 @@ PUBLIC_URL = None
 
 def start_tunnel():
     global PUBLIC_URL
-    cmd = [CLOUDFLARED, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{PORT}"]
-    if ACTIVE_BACKEND == "ollama":
-        cmd += ["--http-host-header", f"127.0.0.1:{PORT}"]
+    # The tunnel points at the auth proxy, never at the engine itself.
+    cmd = [CLOUDFLARED, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{PROXY_PORT}"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     found = threading.Event()
     log = open(f"{LOG_DIR}/cloudflared.log", "a")
@@ -440,18 +580,18 @@ def announce(url):
     print(f"\n{bar}\n  N-ATLaS is live at:\n\n      {url}\n\n"
           f"  OpenAI-compatible endpoint: {url}/v1/chat/completions  (model: {MODEL_NAME})\n"
           f"  → Vercel: Settings → Environment Variables → NATLAS_BASE_URL = {url}\n"
+          f"    {'and NATLAS_API_KEY = the same key as the Kaggle secret' if NATLAS_API_KEY else 'WARNING: no API key, URL is open'}\n"
           f"    (then Deployments → ⋯ → Redeploy). Keep this session running.\n{bar}\n", flush=True)
     notify(url, "N-ATLaS URL")
 
 def wait_public(url):
     for _ in range(24):  # DNS for a fresh quick tunnel can take a few seconds to propagate
         try:
-            with urllib.request.urlopen(url + HEALTH_PATH, timeout=10) as r:
+            with urllib.request.urlopen(url + "/health", timeout=10) as r:  # the proxy's open health route
                 if r.status == 200:
                     return
-        except Exception as e:
-            if "401" in str(e):  # API key enabled: the tunnel works, auth is just required
-                return
+        except Exception:
+            pass
         time.sleep(5)
 
 tunnel_proc = start_tunnel()
@@ -461,7 +601,7 @@ announce(PUBLIC_URL)
 # %%
 # ---------------------------------------------------------------- 8. Keep alive (leave this running)
 # Kaggle keeps a GPU session alive while a cell is running (max 12 h, 30 GPU-hours per week).
-# This loop watches the server and the tunnel and restarts either if it dies.
+# This loop watches the engine, the auth proxy and the tunnel and restarts any of them if it dies.
 # To stop: click ■ (Interrupt) then Run → "Stop session" (or cancel the running version) to save GPU quota.
 started = time.time()
 try:
@@ -475,6 +615,9 @@ try:
             else:
                 server_proc = start_llama(ACTIVE_BACKEND)
             wait_until_ready(server_proc)
+        if proxy_proc.poll() is not None:
+            print("⚠️  Auth proxy stopped; restarting (the URL stays the same)…")
+            proxy_proc = start_proxy()
         if tunnel_proc.poll() is not None:
             print("⚠️  Tunnel stopped; starting a new one (the URL WILL change)…")
             tunnel_proc = start_tunnel()
@@ -486,11 +629,12 @@ try:
         except Exception as e:
             state = f"busy/unreachable ({type(e).__name__})"
         up = (time.time() - started) / 3600
-        print(f"[{time.strftime('%H:%M:%S')}] up {up:.1f} h · {ACTIVE_BACKEND} {state} · {PUBLIC_URL}", flush=True)
+        print(f"[{time.strftime('%H:%M:%S')}] up {up:.1f} h · {ACTIVE_BACKEND} {state} · "
+              f"proxy {'auth' if NATLAS_API_KEY else 'OPEN'} · {PUBLIC_URL}", flush=True)
 except KeyboardInterrupt:
     print("Stopping…")
 finally:
-    for p in (tunnel_proc, server_proc):
+    for p in (tunnel_proc, proxy_proc, server_proc):
         try:
             p.terminate()
         except Exception:
