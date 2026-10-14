@@ -1,0 +1,70 @@
+{
+  "name": "@olaxbonnke/natlas-js",
+  "version": "0.1.0",
+  "description": "Zero-dependency TypeScript SDK for N-ATLaS, Nigeria's multilingual LLM (Yoruba, Hausa, Igbo, Nigerian English). Chat, streaming and translation over any OpenAI-compatible N-ATLaS endpoint.",
+  "author": "Bonnke Olaitan (https://github.com/olaxbonnke)",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "natlas-js": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+  },
+  "keywords": [
+    "n-atlas",
+    "natlas",
+    "llm",
+    "nigeria",
+    "yoruba",
+    "hausa",
+    "igbo",
+    "african-languages",
+    "translation",
+    "sdk",
+    "openai-compatible",
+    "llama.cpp"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/olaxbonnke/natlas-js.git",
+    "directory": "packages/natlas"
+  },
+  "homepage": "https://github.com/olaxbonnke/natlas-js#readme",
+  "bugs": "https://github.com/olaxbonnke/natlas-js/issues",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

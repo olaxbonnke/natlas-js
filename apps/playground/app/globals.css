@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-[#f6faf7] text-slate-900 antialiased;
+}
+
+.flag-stripe {
+  background: linear-gradient(90deg, #008751 0 33.33%, #ffffff 33.33% 66.66%, #008751 66.66% 100%);
+}
+
+.card {
+  @apply rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04),0_8px_24px_-12px_rgba(0,135,81,0.12)];
+}
+
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl bg-naija-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-naija-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-naija-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.btn-ghost {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-naija-400 disabled:opacity-40;
+}
+
+.chip {
+  @apply inline-flex items-center gap-1.5 rounded-full border border-naija-200 bg-naija-50 px-3 py-1.5 text-left text-[13px] text-naija-900 transition hover:border-naija-400 hover:bg-naija-100;
+}
+
+.field {
+  @apply w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-[15px] leading-relaxed text-slate-900 placeholder:text-slate-400 focus:border-naija-500 focus:outline-none focus:ring-2 focus:ring-naija-200;
+}
+
+.select {
+  @apply rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm font-medium text-slate-800 focus:border-naija-500 focus:outline-none focus:ring-2 focus:ring-naija-200;
+}
+
+.code-scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.code-scroll::-webkit-scrollbar-thumb {
+  background: #1f3d31;
+  border-radius: 8px;
+}

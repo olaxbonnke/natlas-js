@@ -1,0 +1,42 @@
+@page {
+  size: A4;
+  margin: 20mm 18mm 20mm 18mm;
+  @top-left { content: "natlas-js · Technical documentation"; font: 600 8.5pt "DejaVu Sans", sans-serif; color: #008751; }
+  @top-right { content: "NAIC PS1 · Developer Infrastructure"; font: 8.5pt "DejaVu Sans", sans-serif; color: #64748b; }
+  @bottom-center { content: counter(page) " / " counter(pages); font: 8.5pt "DejaVu Sans", sans-serif; color: #64748b; }
+}
+@page :first { @top-left { content: none; } @top-right { content: none; } }
+html { font-family: "DejaVu Sans", sans-serif; font-size: 9.6pt; line-height: 1.5; color: #0f172a; }
+body { margin: 0; }
+header#title-block-header { border-top: 10px solid #008751; padding-top: 18mm; margin-bottom: 8mm; page-break-after: avoid; }
+header#title-block-header::before { content: ""; display: block; height: 4px; width: 33%; margin: -18mm 0 18mm 33.4%; background: #fff; }
+h1.title { font-size: 25pt; color: #008751; margin: 0 0 4mm; line-height: 1.2; }
+p.subtitle { font-size: 12pt; color: #334155; margin: 0 0 6mm; }
+p.author, p.date { margin: 0; color: #475569; font-size: 10pt; }
+nav#TOC { page-break-after: always; margin-top: 8mm; }
+nav#TOC::before { content: "Contents"; display: block; font-size: 15pt; font-weight: 700; color: #008751; margin-bottom: 3mm; }
+nav#TOC ul { list-style: none; padding-left: 0; margin: 0; }
+nav#TOC ul ul { padding-left: 6mm; }
+nav#TOC li { margin: 1.2mm 0; }
+nav#TOC a { color: #0f172a; text-decoration: none; }
+nav#TOC a::after { content: leader(".") target-counter(attr(href), page); color: #64748b; }
+h1 { font-size: 15.5pt; color: #008751; border-bottom: 1.5px solid #a6f3cc; padding-bottom: 1.5mm; margin: 9mm 0 3mm; page-break-after: avoid; }
+h2 { font-size: 12pt; color: #035737; margin: 6mm 0 2mm; page-break-after: avoid; }
+h1 .header-section-number, h2 .header-section-number { color: #0bb56f; margin-right: 2mm; }
+p { margin: 0 0 2.5mm; }
+a { color: #006e43; text-decoration: none; }
+table { border-collapse: collapse; width: 100%; margin: 2mm 0 4mm; font-size: 8.6pt; page-break-inside: auto; }
+th { background: #008751; color: #fff; text-align: left; padding: 1.6mm 2mm; font-weight: 600; }
+td { border-bottom: 0.6px solid #d1fae4; padding: 1.4mm 2mm; vertical-align: top; }
+tr:nth-child(even) td { background: #f6faf7; }
+tr { page-break-inside: avoid; }
+code { font-family: "DejaVu Sans Mono", monospace; font-size: 8.4pt; background: #ecfdf4; padding: 0 1px; border-radius: 2px; }
+pre { background: #0b1f17; color: #e2f5ea; padding: 3mm 3.5mm; border-radius: 3mm; font-size: 8pt; line-height: 1.45; white-space: pre-wrap; word-break: break-word; page-break-inside: avoid; }
+pre code { background: none; color: inherit; font-size: inherit; padding: 0; }
+pre code span { color: inherit !important; font-weight: normal !important; font-style: normal !important; }
+figure { margin: 3mm 0 5mm; text-align: center; page-break-inside: avoid; }
+figure img { max-width: 100%; }
+figcaption { font-size: 8.5pt; color: #64748b; margin-top: 1.5mm; }
+strong { color: #0f172a; }
+ul, ol { margin: 0 0 3mm; padding-left: 6mm; }
+li { margin: 0.8mm 0; }

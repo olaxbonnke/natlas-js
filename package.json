@@ -1,0 +1,23 @@
+{
+  "name": "natlas-js-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Developer infrastructure for N-ATLaS, Nigeria's multilingual LLM: TypeScript SDK, web playground and a $0 self-hosting recipe.",
+  "author": "Bonnke Olaitan (https://github.com/olaxbonnke)",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w natlas-js && npm run build -w natlas-playground",
+    "build:sdk": "npm run build -w natlas-js",
+    "test": "npm run test -w natlas-js",
+    "typecheck": "npm run typecheck -w natlas-js",
+    "dev": "npm run build:sdk && npm run dev -w natlas-playground",
+    "docs:pdf": "bash scripts/build-docs.sh"
+  },
+  "engines": {
+    "node": ">=18.18"
+  }
+}

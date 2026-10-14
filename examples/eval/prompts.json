@@ -1,0 +1,20 @@
+{
+  "description": "Small smoke/evaluation set for N-ATLaS via natlas-js. Outputs are saved for human rating (fluency, adequacy, orthography 1-5) by fluent speakers. References are short and indicative, not gold standards.",
+  "translation": [
+    { "id": "t-en-yo-1", "from": "en", "to": "yo", "text": "Good morning, how are you?", "reference": "Ẹ kú àárọ̀, ṣé dáadáa ni?" },
+    { "id": "t-en-yo-2", "from": "en", "to": "yo", "text": "Please take this medicine twice a day after meals." },
+    { "id": "t-en-ha-1", "from": "en", "to": "ha", "text": "Good morning, how are you?", "reference": "Ina kwana, yaya kake?" },
+    { "id": "t-en-ha-2", "from": "en", "to": "ha", "text": "The market opens every Saturday at seven in the morning." },
+    { "id": "t-en-ig-1", "from": "en", "to": "ig", "text": "Good morning, how are you?", "reference": "Ụtụtụ ọma, kedụ ka ị mere?" },
+    { "id": "t-en-ig-2", "from": "en", "to": "ig", "text": "Education is the key to a better future for our children." },
+    { "id": "t-yo-en-1", "from": "yo", "to": "en", "text": "Ẹ kú àárọ̀, ṣé ẹ ti jẹun?", "reference": "Good morning, have you eaten?" },
+    { "id": "t-ha-en-1", "from": "ha", "to": "en", "text": "Ina kasuwa take?", "reference": "Where is the market?" },
+    { "id": "t-ig-en-1", "from": "ig", "to": "en", "text": "Kedụ maka ezinụlọ gị?", "reference": "How is your family?" }
+  ],
+  "chat": [
+    { "id": "c-yo-1", "replyIn": "yo", "prompt": "Sọ ìtàn kúkúrú kan nípa Ìjàpá àti Erin." },
+    { "id": "c-ha-1", "replyIn": "ha", "prompt": "Menene amfanin noman rani ga manoma?" },
+    { "id": "c-ig-1", "replyIn": "ig", "prompt": "Kọwaa uru agụmakwụkwọ bara n'obodo anyị." },
+    { "id": "c-en-1", "replyIn": "en", "prompt": "Explain in three sentences why mobile money matters for traders in Nigerian markets." }
+  ]
+}

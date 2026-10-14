@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+.env
+.env.local
+.env*.local
+.vercel/
+.DS_Store
+*.log
+npm-debug.log*
+# model weights never belong in git
+*.gguf
+models/
+docs/assets/*.aux
+docs/assets/*.log
+examples/eval/results-*.jsonl
+examples/eval/rating-sheet-*.csv
+__pycache__/
