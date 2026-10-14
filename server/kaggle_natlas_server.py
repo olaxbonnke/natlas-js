@@ -29,13 +29,14 @@
 # ---------------------------------------------------------------- 1. Settings (edit only if you need to)
 import os
 
-# Quantized GGUF of NCAIR1/N-ATLaS. QuantFactory is a COMMUNITY quantization (llama.cpp, Q4_K_M = 4.92 GB),
-# not an official NCAIR/Awarri release. It fits easily in one T4 (16 GB VRAM).
-# Alternative community repo with the same quant: "tosinamuda/N-ATLaS-GGUF" / "N-ATLaS-GGUF-Q4_K_M.gguf".
+# Quantized GGUF of NCAIR1/N-ATLaS. QuantFactory is a COMMUNITY quantization (llama.cpp, Q8_0 = 8.54 GB),
+# not an official NCAIR/Awarri release. Q8_0 is near-lossless vs FP16 (better Yoruba/Hausa/Igbo than Q4_K_M)
+# and still fits one T4 (16 GB VRAM) with an 8k context; if not, Ollama is allowed to split across both T4s.
+# Smaller/faster fallback: MODEL_FILE "N-ATLaS.Q4_K_M.gguf", MODEL_QUANT "Q4_K_M" (4.92 GB, SHA-256 71de156e…).
 MODEL_REPO = os.environ.get("NATLAS_GGUF_REPO", "QuantFactory/N-ATLaS-GGUF")
-MODEL_FILE = os.environ.get("NATLAS_GGUF_FILE", "N-ATLaS.Q4_K_M.gguf")
-MODEL_QUANT = "Q4_K_M"
-MODEL_SHA256 = "71de156e0e6a137319e3b4a159d2a38c06726b6f03067c51c5894ac1596b2c80"  # of QuantFactory Q4_K_M
+MODEL_FILE = os.environ.get("NATLAS_GGUF_FILE", "N-ATLaS.Q8_0.gguf")
+MODEL_QUANT = "Q8_0"
+MODEL_SHA256 = "4ca520f86752453ea90139c9cbdbb811ec3f29703affb4f796f7756a5987cafd"  # of QuantFactory Q8_0
 MODEL_NAME = "n-atlas"  # the model id natlas-js / the playground send
 
 CONTEXT = 8192          # N-ATLaS is tuned for ~8k tokens (a T4 has plenty of room for it)
@@ -53,7 +54,7 @@ try:
 except ImportError:
     IN_COLAB = False
 
-WORK_DIR = "/tmp/natlas"            # outside /kaggle/working so 5 GB of weights are not saved as output
+WORK_DIR = "/tmp/natlas"            # outside /kaggle/working so 8.5 GB of weights are not saved as output
 MODEL_DIR = f"{WORK_DIR}/models"
 LOG_DIR = f"{WORK_DIR}/logs"
 URL_FILE = "/kaggle/working/natlas_url.txt" if IN_KAGGLE else f"{WORK_DIR}/natlas_url.txt"
@@ -178,6 +179,7 @@ def ollama_gpu_report():
     return frac, text
 
 def setup_ollama():
+    global CONTEXT
     if not shutil.which("ollama"):
         # The install script needs zstd to unpack and lspci/lshw to detect the NVIDIA GPU.
         sh("(apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd pciutils lshw) "
@@ -213,15 +215,38 @@ def setup_ollama():
     print(subprocess.run(["ollama", "list"], capture_output=True, text=True, env=ollama_env).stdout)
 
     # Load it onto the GPU now (keep_alive -1 keeps it there), then confirm where it sits.
-    ollama_api("/api/generate", {"model": MODEL_NAME, "prompt": "", "keep_alive": -1}, timeout=600)
-    frac, text = ollama_gpu_report()
-    print(text)
-    if frac < 0.9:
-        print(open(OLLAMA_LOG, errors="ignore").read()[-4000:])
-        proc.terminate()
-        raise RuntimeError(f"Ollama loaded the model only {frac:.0%} on the GPU")
-    print(f"✅ n-atlas is {frac:.0%} on the GPU")
-    return proc
+    # If Q8_0 at CONTEXT does not fit one T4, retry with the model split across both T4s
+    # (OLLAMA_SCHED_SPREAD=1), then with a 4096 context.
+    attempts = [("one GPU", {}, CONTEXT)]
+    if GPU_NAME.count("|") >= 1:
+        attempts.append(("split across GPUs", {"OLLAMA_SCHED_SPREAD": "1"}, CONTEXT))
+    attempts.append(("context 4096", {"OLLAMA_SCHED_SPREAD": "1"}, 4096))
+    for i, (label, extra, ctx) in enumerate(attempts):
+        if i > 0:
+            print(f"↻ Retrying the GPU load: {label}")
+            proc.terminate()
+            try:
+                proc.wait(timeout=30)
+            except Exception:
+                proc.kill()
+            ollama_env.update(extra)
+            ollama_env["OLLAMA_CONTEXT_LENGTH"] = str(ctx)
+            proc = start_ollama()
+        ollama_api("/api/generate", {"model": MODEL_NAME, "prompt": "", "keep_alive": -1,
+                                     "options": {"num_ctx": ctx}}, timeout=900)
+        frac, text = ollama_gpu_report()
+        print(text)
+        print(subprocess.run("nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader",
+                             shell=True, capture_output=True, text=True).stdout.strip())
+        if frac >= 0.9:
+            CONTEXT = ctx
+            print(f"✅ n-atlas ({MODEL_QUANT}) is {frac:.0%} on the GPU ({label}, context {ctx})")
+            notify(f"{MODEL_QUANT} loaded {frac:.0%} on GPU ({label}, context {ctx})", "N-ATLaS status")
+            return proc
+        print(f"⚠️  only {frac:.0%} on the GPU ({label})")
+    print(open(OLLAMA_LOG, errors="ignore").read()[-4000:])
+    proc.terminate()
+    raise RuntimeError(f"Ollama loaded the model only {frac:.0%} on the GPU")
 
 # %%
 # ---------------------------------------------------------------- 4. Backends B/C: llama.cpp fallbacks (only if Ollama failed)
@@ -237,7 +262,7 @@ def download_gguf():
     t0 = time.time()
     MODEL_PATH = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILE, local_dir=MODEL_DIR, token=HF_TOKEN or None)
     print(f"✅ Model at {MODEL_PATH} ({os.path.getsize(MODEL_PATH) / 1e9:.2f} GB) in {time.time() - t0:.0f}s")
-    if MODEL_REPO == "QuantFactory/N-ATLaS-GGUF" and MODEL_FILE == "N-ATLaS.Q4_K_M.gguf":
+    if MODEL_REPO == "QuantFactory/N-ATLaS-GGUF" and MODEL_FILE == "N-ATLaS.Q8_0.gguf":
         h = hashlib.sha256()
         with open(MODEL_PATH, "rb") as f:
             for block in iter(lambda: f.read(1 << 24), b""):
