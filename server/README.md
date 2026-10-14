@@ -8,7 +8,7 @@ What you end up with:
 
 ```
 Your browser / app ──HTTPS──▶ https://<random-words>.trycloudflare.com ──tunnel──▶ Kaggle notebook (free T4 GPU)
-                                                                                   └─ llama.cpp server running N-ATLaS
+                                                                                   └─ Ollama (llama.cpp) serving N-ATLaS
 ```
 
 > **Model and licence.** N-ATLaS is an initiative of the Federal Ministry of Communications, Innovation and
@@ -86,15 +86,14 @@ In the right-hand panel (**Settings**, or the ⋮ menu → *Session options* on 
 
    | Cell | What it does | Typical time |
    |---|---|---|
-   | 1 Settings | Picks the model file and folders | instant |
-   | 2 Checks | Confirms the GPU and internet are on | seconds |
-   | 3 Secrets | Logs in to Hugging Face with `HF_TOKEN`, checks you accepted the terms | seconds |
-   | 4 Download | Downloads the 4.9 GB GGUF and checks its SHA-256 | 1-3 min |
-   | 5 Install | Builds llama.cpp's server with CUDA for the T4 (falls back to a prebuilt llama-cpp-python wheel if the build fails) | 8-12 min |
-   | 6 Serve | Starts the OpenAI-compatible server on port 8000 and loads the model on the GPU | ~1 min |
-   | 7 Smoke test | Asks N-ATLaS a question in Yoruba and prints the reply | ~10 s |
-   | 8 Tunnel | Starts a free Cloudflare quick tunnel and prints your public URL | ~10 s |
-   | 9 Keep alive | Watches the server and tunnel; prints a heartbeat every minute | runs until you stop it |
+   | 1 Settings | Picks the model file, the engine and folders | instant |
+   | 2 Checks | Confirms the GPU and internet are on, reads optional secrets, posts "started" to ntfy | seconds |
+   | 3 Ollama | Installs Ollama (prebuilt CUDA, nothing to compile), pulls `hf.co/QuantFactory/N-ATLaS-GGUF:Q4_K_M`, names it `n-atlas` and loads it on the GPU | 2-4 min |
+   | 4 Fallbacks | Defines the llama.cpp fallbacks (CUDA build of `llama-server`, then a prebuilt llama-cpp-python wheel); only used if Ollama fails | instant |
+   | 5 Serve | Picks the engine that worked and waits for the OpenAI-compatible API (`:11434` for Ollama, `:8000` for llama.cpp) | seconds |
+   | 6 Smoke test | Asks N-ATLaS a question in Yoruba, prints the reply, GPU share and tokens/sec | ~10 s |
+   | 7 Tunnel | Starts a free Cloudflare quick tunnel, prints your public URL and pushes it to ntfy | ~10 s |
+   | 8 Keep alive | Watches the server and tunnel; prints a heartbeat every minute | runs until you stop it |
 
 3. Look for the box that says **N-ATLaS is live at:** `https://something-something.trycloudflare.com`. That is your API URL.
    It is also saved to `/kaggle/working/natlas_url.txt`.
@@ -136,7 +135,7 @@ and then **Run → Stop session** (or the power icon). Closing the tab without s
 | "No GPU found" / GPU option greyed out | Phone-verify (step 5), then Settings → Accelerator → GPU T4. You may have used this week's quota: check *Settings → Quota*. |
 | "No internet" | Settings → Internet → On (needs phone verification). |
 | Download error 401/403 | Check the `HF_TOKEN` secret is attached to this notebook (Add-ons → Secrets, tick the box) and the token is a *Read* token. |
-| llama.cpp build fails | The notebook automatically installs the prebuilt `llama-cpp-python` wheel instead. To skip the build entirely, set `BACKEND = "llama-cpp-python"` in cell 1. |
+| Ollama fails to start on the GPU | The notebook automatically falls back to building llama.cpp with CUDA (with the `libcuda` stub fix for the `CUDA::cuda_driver` CMake error), then to a prebuilt llama-cpp-python wheel. To force one, set `NATLAS_BACKEND` / `BACKEND` in cell 1 to `llama-server` or `llama-cpp-python`. |
 | `CUDA out of memory` | Lower `CONTEXT` to 4096 or `PARALLEL` to 1 in cell 1, or use `N-ATLaS.Q4_K_S.gguf`. |
 | Playground says "Model offline" | The Kaggle session ended or the URL changed. Re-run and update `NATLAS_BASE_URL` (step 9). |
 | Playground says "Key mismatch" | `NATLAS_API_KEY` in Vercel differs from the Kaggle secret. |

@@ -2,12 +2,17 @@
 # # N-ATLaS free GPU server (Kaggle / Colab) for natlas-js
 #
 # This notebook serves **N-ATLaS** (Nigeria's multilingual LLM: Yoruba, Hausa, Igbo, Nigerian English) as an
-# **OpenAI-compatible API** (`/v1/chat/completions`) from a free Kaggle T4 GPU, and gives it a public HTTPS URL
-# with a free Cloudflare quick tunnel (`*.trycloudflare.com`). Cost: $0.
+# **OpenAI-compatible API** (`/v1/chat/completions`, `/v1/models`, streaming SSE) from a free Kaggle T4 GPU, and
+# gives it a public HTTPS URL with a free Cloudflare quick tunnel (`*.trycloudflare.com`). Cost: $0.
 #
-# **Before you run:** Settings → Accelerator → **GPU T4** · Settings → **Internet on** ·
-# Add-ons → Secrets → `HF_TOKEN` (your Hugging Face read token). Then **Run All**.
-# The public URL is printed near the end. Paste it into Vercel as `NATLAS_BASE_URL`.
+# **Engine:** [Ollama](https://ollama.com) (prebuilt CUDA, nothing to compile). If Ollama cannot start on the GPU,
+# the notebook falls back to building llama.cpp's `llama-server` with CUDA, then to a prebuilt llama-cpp-python wheel.
+# The model is always served under the name **`n-atlas`**, which is what natlas-js and the playground send.
+#
+# **Before you run:** Settings → Accelerator → **GPU T4 x2** (or T4) · Settings → **Internet on**.
+# Optional: Add-ons → Secrets → `HF_TOKEN` (the GGUF is public, so the token is not required).
+# Then **Run All** (or Save Version → Save & Run All). The public URL is printed near the end and pushed to ntfy.
+# Paste it into Vercel as `NATLAS_BASE_URL`.
 #
 # Full beginner guide: `server/README.md` in https://github.com/olaxbonnke/natlas-js
 #
@@ -24,15 +29,16 @@ import os
 # Alternative community repo with the same quant: "tosinamuda/N-ATLaS-GGUF" / "N-ATLaS-GGUF-Q4_K_M.gguf".
 MODEL_REPO = os.environ.get("NATLAS_GGUF_REPO", "QuantFactory/N-ATLaS-GGUF")
 MODEL_FILE = os.environ.get("NATLAS_GGUF_FILE", "N-ATLaS.Q4_K_M.gguf")
+MODEL_QUANT = "Q4_K_M"
 MODEL_SHA256 = "71de156e0e6a137319e3b4a159d2a38c06726b6f03067c51c5894ac1596b2c80"  # of QuantFactory Q4_K_M
+MODEL_NAME = "n-atlas"  # the model id natlas-js / the playground send
 
-PORT = 8000
-CONTEXT = 8192          # N-ATLaS is tuned for ~8k tokens
-PARALLEL = 2            # simultaneous requests (context is split between them)
-GPU_LAYERS = 99         # offload every layer to the GPU
-# "llama-server": build llama.cpp's server from source with CUDA (~8-12 min, most robust, has /health)
-# "llama-cpp-python": install a prebuilt CUDA wheel (~1-2 min); used automatically if the build fails
-BACKEND = os.environ.get("NATLAS_BACKEND", "llama-server")
+CONTEXT = 8192          # N-ATLaS is tuned for ~8k tokens (a T4 has plenty of room for it)
+PARALLEL = 2            # simultaneous requests
+GPU_LAYERS = 99         # llama.cpp fallbacks: offload every layer to the GPU
+# "ollama" (default, prebuilt CUDA, ~2 min) → falls back to "llama-server" (build llama.cpp with CUDA, ~10 min)
+# → falls back to "llama-cpp-python" (prebuilt CUDA wheel).
+BACKEND = os.environ.get("NATLAS_BACKEND", "ollama")
 KEEP_ALIVE_HOURS = 11.5  # Kaggle stops GPU sessions at 12 h
 
 IN_KAGGLE = os.path.exists("/kaggle")
@@ -48,38 +54,23 @@ LOG_DIR = f"{WORK_DIR}/logs"
 URL_FILE = "/kaggle/working/natlas_url.txt" if IN_KAGGLE else f"{WORK_DIR}/natlas_url.txt"
 for d in (WORK_DIR, MODEL_DIR, LOG_DIR):
     os.makedirs(d, exist_ok=True)
-print(f"Platform: {'Kaggle' if IN_KAGGLE else 'Colab' if IN_COLAB else 'other'} | backend: {BACKEND}")
+print(f"Platform: {'Kaggle' if IN_KAGGLE else 'Colab' if IN_COLAB else 'other'} | preferred backend: {BACKEND}")
 
 # %%
-# ---------------------------------------------------------------- 2. Check the GPU and internet
-import subprocess, sys, shutil, urllib.request
+# ---------------------------------------------------------------- 2. Helpers, secrets, GPU and internet check
+import subprocess, sys, shutil, urllib.request, json, time
 
-def sh(cmd, check=True, quiet=False):
-    """Run a shell command, streaming output."""
-    print(f"$ {cmd}")
-    p = subprocess.run(cmd, shell=True, text=True,
+def sh(cmd, check=True, quiet=False, timeout=None):
+    """Run a shell command. quiet=True captures output and prints the tail only on failure."""
+    print(f"$ {cmd}", flush=True)
+    p = subprocess.run(cmd, shell=True, text=True, timeout=timeout,
                        stdout=subprocess.PIPE if quiet else None, stderr=subprocess.STDOUT if quiet else None)
     if check and p.returncode != 0:
         if quiet and p.stdout:
-            print(p.stdout[-4000:])
+            print(p.stdout[-6000:])
         raise RuntimeError(f"Command failed ({p.returncode}): {cmd}")
     return p
 
-gpu = subprocess.run("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader", shell=True,
-                     capture_output=True, text=True)
-if gpu.returncode != 0 or not gpu.stdout.strip():
-    raise SystemExit("❌ No GPU found. Kaggle: Settings → Accelerator → GPU T4 x2 (or T4). "
-                     "If the option is greyed out, phone-verify your Kaggle account first.")
-print("✅ GPU:", gpu.stdout.strip().replace("\n", " | "))
-
-try:
-    urllib.request.urlopen("https://huggingface.co", timeout=15)
-    print("✅ Internet is on")
-except Exception as e:
-    raise SystemExit("❌ No internet. Kaggle: Settings → Internet → On (needs a phone-verified account). " + str(e))
-
-# %%
-# ---------------------------------------------------------------- 3. Secrets: HF_TOKEN (and optional NATLAS_API_KEY)
 def get_secret(name):
     if os.environ.get(name):
         return os.environ[name]
@@ -97,62 +88,180 @@ def get_secret(name):
             return None
     return None
 
-HF_TOKEN = get_secret("HF_TOKEN")
-NATLAS_API_KEY = get_secret("NATLAS_API_KEY")   # optional: protects your public URL
-NTFY_TOPIC = get_secret("NTFY_TOPIC") or "natlas-olaxbonnke-1aeb3c69"  # the public URL is also pushed to https://ntfy.sh/<topic>
+HF_TOKEN = get_secret("HF_TOKEN")               # optional: the GGUF is public
+NATLAS_API_KEY = get_secret("NATLAS_API_KEY")   # optional: protects your public URL (llama.cpp backends only)
+NTFY_TOPIC = get_secret("NTFY_TOPIC") or "natlas-olaxbonnke-1aeb3c69"  # status + URL pushed to https://ntfy.sh/<topic>
 
-sh(f"{sys.executable} -m pip install -q -U huggingface_hub", quiet=True)
-from huggingface_hub import HfApi, hf_hub_download, login
-
-if HF_TOKEN:
-    login(token=HF_TOKEN, add_to_git_credential=False)
-    print("✅ Logged in to Hugging Face")
+def notify(message, title="N-ATLaS"):
+    """Best-effort push to ntfy so progress and failures are visible without opening the notebook."""
+    print(f"[notify] {title}: {message}", flush=True)
+    if not NTFY_TOPIC:
+        return
     try:
-        HfApi().model_info("NCAIR1/N-ATLaS", token=HF_TOKEN)
-        print("✅ Your account has accepted the N-ATLaS terms (NCAIR1/N-ATLaS is accessible)")
-    except Exception:
-        print("⚠️  Could not open the official NCAIR1/N-ATLaS repo with your token. Please open "
-              "https://huggingface.co/NCAIR1/N-ATLaS and accept the Terms of Use. Continuing with the GGUF.")
-else:
-    print("⚠️  No HF_TOKEN secret found. Add-ons → Secrets → add HF_TOKEN. Trying anonymous download.")
+        urllib.request.urlopen(urllib.request.Request(f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode(),
+                                                      headers={"Title": title}), timeout=10)
+    except Exception as e:
+        print("ntfy failed:", e)
+
+def fail(message):
+    notify(message, "N-ATLaS FAILED")
+    raise SystemExit("❌ " + message)
+
+gpu = subprocess.run("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader", shell=True,
+                     capture_output=True, text=True)
+if gpu.returncode != 0 or not gpu.stdout.strip():
+    fail("No GPU found. Kaggle: Settings → Accelerator → GPU T4 x2 (or T4). "
+         "If the option is greyed out, phone-verify your Kaggle account first.")
+GPU_NAME = gpu.stdout.strip().replace("\n", " | ")
+print("✅ GPU:", GPU_NAME)
+
+try:
+    urllib.request.urlopen("https://huggingface.co", timeout=15)
+    print("✅ Internet is on")
+except Exception as e:
+    raise SystemExit("❌ No internet. Kaggle: Settings → Internet → On (needs a phone-verified account). " + str(e))
+
+notify(f"Notebook started on {GPU_NAME}; preferred backend {BACKEND}", "N-ATLaS status")
 print("API key protection:", "ON" if NATLAS_API_KEY else "off (anyone with the URL can use it)")
 
 # %%
-# ---------------------------------------------------------------- 4. Download the N-ATLaS GGUF (~5 GB, 1-3 min)
-import hashlib, time
+# ---------------------------------------------------------------- 3. Backend A: Ollama (prebuilt CUDA, no compiling)
+OLLAMA_PORT = 11434
+OLLAMA_LOG = f"{LOG_DIR}/ollama.log"
+ollama_env = {**os.environ,
+              "OLLAMA_HOST": f"0.0.0.0:{OLLAMA_PORT}",
+              "OLLAMA_KEEP_ALIVE": "-1",            # never unload the model
+              "OLLAMA_CONTEXT_LENGTH": str(CONTEXT),
+              "OLLAMA_NUM_PARALLEL": str(PARALLEL),
+              "OLLAMA_ORIGINS": "*"}
 
-t0 = time.time()
-MODEL_PATH = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILE, local_dir=MODEL_DIR, token=HF_TOKEN or None)
-size_gb = os.path.getsize(MODEL_PATH) / 1e9
-print(f"✅ Model at {MODEL_PATH} ({size_gb:.2f} GB) in {time.time() - t0:.0f}s")
+def ollama_api(path, data=None, timeout=30):
+    req = urllib.request.Request(f"http://127.0.0.1:{OLLAMA_PORT}{path}",
+                                 data=json.dumps(data).encode() if data is not None else None,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read() or b"{}")
 
-if MODEL_REPO == "QuantFactory/N-ATLaS-GGUF" and MODEL_FILE == "N-ATLaS.Q4_K_M.gguf":
-    h = hashlib.sha256()
-    with open(MODEL_PATH, "rb") as f:
-        for block in iter(lambda: f.read(1 << 24), b""):
-            h.update(block)
-    ok = h.hexdigest() == MODEL_SHA256
-    print("✅ SHA-256 verified" if ok else f"⚠️  SHA-256 mismatch: {h.hexdigest()}")
+def start_ollama():
+    log = open(OLLAMA_LOG, "ab")
+    proc = subprocess.Popen(["ollama", "serve"], env=ollama_env, stdout=log, stderr=subprocess.STDOUT)
+    for _ in range(60):
+        if proc.poll() is not None:
+            print(open(OLLAMA_LOG, errors="ignore").read()[-3000:])
+            raise RuntimeError("ollama serve exited")
+        try:
+            ollama_api("/api/version", timeout=3)
+            return proc
+        except Exception:
+            time.sleep(1)
+    raise RuntimeError("ollama serve did not answer in 60 s")
+
+def ollama_gpu_report():
+    """Return (size_vram_fraction, text) for the loaded n-atlas model, from /api/ps and `ollama ps`."""
+    frac = 0.0
+    try:
+        for m in ollama_api("/api/ps").get("models", []):
+            if m.get("name", "").split(":")[0] == MODEL_NAME and m.get("size"):
+                frac = m.get("size_vram", 0) / m["size"]
+    except Exception:
+        pass
+    text = subprocess.run(["ollama", "ps"], capture_output=True, text=True, env=ollama_env).stdout.strip()
+    return frac, text
+
+def setup_ollama():
+    if not shutil.which("ollama"):
+        # The install script needs zstd to unpack and lspci/lshw to detect the NVIDIA GPU.
+        sh("(apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd pciutils lshw) "
+           "> /dev/null 2>&1 || true", check=False)
+        sh("curl -fsSL https://ollama.com/install.sh | sh", quiet=True, timeout=900)
+    print(subprocess.run(["ollama", "--version"], capture_output=True, text=True).stdout.strip())
+    proc = start_ollama()
+    print("✅ ollama serve is up on :11434")
+
+    t0 = time.time()
+    hf_ref = f"hf.co/{MODEL_REPO}:{MODEL_QUANT}"
+    pulled = sh(f"ollama pull {hf_ref}", check=False, quiet=True, timeout=1800).returncode == 0
+    if pulled:
+        sh(f"ollama cp {hf_ref} {MODEL_NAME}", quiet=True)
+        sh(f"ollama rm {hf_ref}", check=False, quiet=True)  # keep a single name in /v1/models (blobs stay)
+    else:
+        print("⚠️  hf.co pull failed; downloading the GGUF and creating the model from a Modelfile")
+        sh(f"{sys.executable} -m pip install -q -U huggingface_hub", quiet=True)
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILE, local_dir=MODEL_DIR, token=HF_TOKEN or None)
+        # Llama-3.1 chat format (N-ATLaS is a Llama-3.1-8B fine-tune).
+        modelfile = (
+            f"FROM {path}\n"
+            'TEMPLATE """{{ if .System }}<|start_header_id|>system<|end_header_id|>\n\n{{ .System }}<|eot_id|>{{ end }}'
+            '{{ range .Messages }}<|start_header_id|>{{ .Role }}<|end_header_id|>\n\n{{ .Content }}<|eot_id|>{{ end }}'
+            '<|start_header_id|>assistant<|end_header_id|>\n\n"""\n'
+            'PARAMETER stop "<|eot_id|>"\nPARAMETER stop "<|start_header_id|>"\nPARAMETER stop "<|end_of_text|>"\n'
+            f"PARAMETER num_ctx {CONTEXT}\n")
+        with open(f"{WORK_DIR}/Modelfile", "w") as f:
+            f.write(modelfile)
+        sh(f"ollama create {MODEL_NAME} -f {WORK_DIR}/Modelfile", quiet=True, timeout=1800)
+    print(f"✅ Model '{MODEL_NAME}' ready in Ollama in {time.time() - t0:.0f}s")
+    print(subprocess.run(["ollama", "list"], capture_output=True, text=True, env=ollama_env).stdout)
+
+    # Load it onto the GPU now (keep_alive -1 keeps it there), then confirm where it sits.
+    ollama_api("/api/generate", {"model": MODEL_NAME, "prompt": "", "keep_alive": -1}, timeout=600)
+    frac, text = ollama_gpu_report()
+    print(text)
+    if frac < 0.9:
+        print(open(OLLAMA_LOG, errors="ignore").read()[-4000:])
+        proc.terminate()
+        raise RuntimeError(f"Ollama loaded the model only {frac:.0%} on the GPU")
+    print(f"✅ n-atlas is {frac:.0%} on the GPU")
+    return proc
 
 # %%
-# ---------------------------------------------------------------- 5. Install the inference server (CUDA)
+# ---------------------------------------------------------------- 4. Backends B/C: llama.cpp fallbacks (only if Ollama failed)
+LLAMA_PORT = 8000
 SERVER_BIN = f"{WORK_DIR}/llama.cpp/build/bin/llama-server"
+MODEL_PATH = None
+
+def download_gguf():
+    global MODEL_PATH
+    import hashlib
+    sh(f"{sys.executable} -m pip install -q -U huggingface_hub", quiet=True)
+    from huggingface_hub import hf_hub_download
+    t0 = time.time()
+    MODEL_PATH = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILE, local_dir=MODEL_DIR, token=HF_TOKEN or None)
+    print(f"✅ Model at {MODEL_PATH} ({os.path.getsize(MODEL_PATH) / 1e9:.2f} GB) in {time.time() - t0:.0f}s")
+    if MODEL_REPO == "QuantFactory/N-ATLaS-GGUF" and MODEL_FILE == "N-ATLaS.Q4_K_M.gguf":
+        h = hashlib.sha256()
+        with open(MODEL_PATH, "rb") as f:
+            for block in iter(lambda: f.read(1 << 24), b""):
+                h.update(block)
+        print("✅ SHA-256 verified" if h.hexdigest() == MODEL_SHA256 else f"⚠️  SHA-256 mismatch: {h.hexdigest()}")
 
 def build_llama_server():
     if os.path.exists(SERVER_BIN):
-        print("✅ llama-server already built")
         return True
-    print("Building llama.cpp server with CUDA for the T4 (sm_75). This takes ~8-12 minutes, once per session…")
+    print("Building llama.cpp server with CUDA for the T4 (sm_75). ~8-12 minutes…", flush=True)
     try:
         if not shutil.which("cmake"):
             sh(f"{sys.executable} -m pip install -q cmake", quiet=True)
         if not os.path.exists(f"{WORK_DIR}/llama.cpp"):
             sh(f"git clone --depth 1 https://github.com/ggml-org/llama.cpp {WORK_DIR}/llama.cpp", quiet=True)
-        cuda = "/usr/local/cuda/bin"
-        os.environ["PATH"] = f"{cuda}:{os.environ['PATH']}"
+        cuda = "/usr/local/cuda"
+        stubs = f"{cuda}/lib64/stubs"
+        os.environ["PATH"] = f"{cuda}/bin:{os.environ['PATH']}"
+        # Fix for "Target 'ggml-cuda' links to CUDA::cuda_driver but the target was not found":
+        # CMake's FindCUDAToolkit needs libcuda.so, which only exists as a stub at build time.
+        if os.path.exists(f"{stubs}/libcuda.so"):
+            sh(f"ln -sf {stubs}/libcuda.so {stubs}/libcuda.so.1", check=False)
+            os.environ["LIBRARY_PATH"] = f"{stubs}:{os.environ.get('LIBRARY_PATH', '')}"
+        else:
+            drv = subprocess.run("ldconfig -p | grep -m1 'libcuda.so.1 ' | awk '{print $NF}'", shell=True,
+                                 capture_output=True, text=True).stdout.strip()
+            if drv:
+                os.makedirs(stubs, exist_ok=True)
+                sh(f"ln -sf {drv} {stubs}/libcuda.so", check=False)
         sh(f"cd {WORK_DIR}/llama.cpp && cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 "
-           f"-DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release",
-           quiet=True)
+           f"-DCUDAToolkit_ROOT={cuda} -DCMAKE_CUDA_COMPILER={cuda}/bin/nvcc -DCMAKE_LIBRARY_PATH={stubs} "
+           f"-DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF "
+           f"-DCMAKE_BUILD_TYPE=Release", quiet=True)
         t = time.time()
         sh(f"cd {WORK_DIR}/llama.cpp && cmake --build build --config Release -j {os.cpu_count() or 4} "
            f"--target llama-server", quiet=True)
@@ -164,29 +273,64 @@ def build_llama_server():
 
 def install_llama_cpp_python():
     print("Installing prebuilt llama-cpp-python CUDA wheel…")
-    for cu in ("cu124", "cu122", "cu121"):
-        p = sh(f"{sys.executable} -m pip install -q --prefer-binary 'llama-cpp-python[server]==0.3.4' "
-               f"--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/{cu}", check=False, quiet=True)
-        if p.returncode == 0:
-            check = subprocess.run([sys.executable, "-c",
-                                    "import llama_cpp,sys; sys.exit(0 if llama_cpp.llama_supports_gpu_offload() else 3)"])
-            if check.returncode == 0:
-                print(f"✅ llama-cpp-python ({cu}) with GPU offload")
-                return True
-            print(f"⚠️  {cu} wheel has no GPU offload, trying next")
+    for ver, cu in (("0.3.4", "cu124"), ("0.3.4", "cu122"), ("0.3.4", "cu121")):
+        # --only-binary: never silently compile a CPU-only build from source (that is what made the
+        # previous "no GPU offload" check fail on every index).
+        p = sh(f"{sys.executable} -m pip install -q --only-binary llama-cpp-python 'llama-cpp-python=={ver}' "
+               f"--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/{cu} && "
+               f"{sys.executable} -m pip install -q 'uvicorn' 'fastapi' 'sse-starlette' 'starlette-context' "
+               f"'pydantic-settings'", check=False, quiet=True)
+        if p.returncode != 0:
+            print(f"⚠️  no {cu} wheel for this Python; trying next")
+            continue
+        check = subprocess.run([sys.executable, "-c",
+                                "import llama_cpp,sys; sys.exit(0 if llama_cpp.llama_supports_gpu_offload() else 3)"],
+                               capture_output=True, text=True)
+        if check.returncode == 0:
+            print(f"✅ llama-cpp-python ({cu}) with GPU offload")
+            return True
+        print(f"⚠️  {cu} wheel: no GPU offload ({check.stderr.strip()[-300:]}); trying next")
     return False
 
-if BACKEND == "llama-server" and build_llama_server():
-    ACTIVE_BACKEND = "llama-server"
-elif install_llama_cpp_python():
-    ACTIVE_BACKEND = "llama-cpp-python"
-else:
-    raise SystemExit("❌ Could not install a CUDA inference server. See server/README.md → Troubleshooting.")
-print("Backend:", ACTIVE_BACKEND)
+def start_llama(active):
+    log = open(f"{LOG_DIR}/server.log", "ab")
+    if active == "llama-server":
+        cmd = [SERVER_BIN, "-m", MODEL_PATH, "--host", "0.0.0.0", "--port", str(LLAMA_PORT),
+               "-ngl", str(GPU_LAYERS), "-c", str(CONTEXT), "--parallel", str(PARALLEL),
+               "--alias", MODEL_NAME, "--jinja"]
+        if NATLAS_API_KEY:
+            cmd += ["--api-key", NATLAS_API_KEY]
+    else:
+        cmd = [sys.executable, "-m", "llama_cpp.server", "--model", MODEL_PATH, "--host", "0.0.0.0",
+               "--port", str(LLAMA_PORT), "--n_gpu_layers", "-1", "--n_ctx", str(CONTEXT), "--model_alias", MODEL_NAME]
+        if NATLAS_API_KEY:
+            cmd += ["--api_key", NATLAS_API_KEY]
+    print("Starting:", " ".join(c if c != NATLAS_API_KEY else "***" for c in cmd))
+    return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
 
 # %%
-# ---------------------------------------------------------------- 6. Start the OpenAI-compatible server on :8000
-import json
+# ---------------------------------------------------------------- 5. Pick a backend and start it
+ACTIVE_BACKEND = None
+server_proc = None
+if BACKEND == "ollama":
+    try:
+        server_proc = setup_ollama()
+        ACTIVE_BACKEND = "ollama"
+    except Exception as e:
+        print("⚠️  Ollama path failed:", e)
+        notify(f"Ollama path failed ({str(e)[:200]}); falling back to llama.cpp", "N-ATLaS status")
+if ACTIVE_BACKEND is None:
+    download_gguf()
+    if build_llama_server():
+        ACTIVE_BACKEND = "llama-server"
+    elif install_llama_cpp_python():
+        ACTIVE_BACKEND = "llama-cpp-python"
+    else:
+        fail("Could not start any CUDA inference server (Ollama, llama.cpp build, llama-cpp-python wheel).")
+    server_proc = start_llama(ACTIVE_BACKEND)
+PORT = OLLAMA_PORT if ACTIVE_BACKEND == "ollama" else LLAMA_PORT
+HEALTH_PATH = "/health" if ACTIVE_BACKEND == "llama-server" else "/v1/models"
+print("Backend:", ACTIVE_BACKEND, "on port", PORT)
 
 def local(path, data=None, timeout=10):
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}",
@@ -196,59 +340,64 @@ def local(path, data=None, timeout=10):
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, json.loads(r.read() or b"{}")
 
-def start_server():
-    log = open(f"{LOG_DIR}/server.log", "ab")
-    if ACTIVE_BACKEND == "llama-server":
-        cmd = [SERVER_BIN, "-m", MODEL_PATH, "--host", "0.0.0.0", "--port", str(PORT),
-               "-ngl", str(GPU_LAYERS), "-c", str(CONTEXT), "--parallel", str(PARALLEL),
-               "--alias", "n-atlas", "--jinja"]
-        if NATLAS_API_KEY:
-            cmd += ["--api-key", NATLAS_API_KEY]
-    else:
-        cmd = [sys.executable, "-m", "llama_cpp.server", "--model", MODEL_PATH, "--host", "0.0.0.0",
-               "--port", str(PORT), "--n_gpu_layers", "-1", "--n_ctx", str(CONTEXT), "--model_alias", "n-atlas"]
-        if NATLAS_API_KEY:
-            cmd += ["--api_key", NATLAS_API_KEY]
-    print("Starting:", " ".join(c if c != NATLAS_API_KEY else "***" for c in cmd))
-    return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
-
 def wait_until_ready(proc, limit_s=900):
     t = time.time()
     while time.time() - t < limit_s:
         if proc.poll() is not None:
-            print(open(f"{LOG_DIR}/server.log", errors="ignore").read()[-3000:])
-            raise SystemExit("❌ Server exited. Log above.")
-        for path in ("/health", "/v1/models"):
-            try:
-                status, _ = local(path, timeout=5)
-                if status == 200:
-                    print(f"✅ N-ATLaS server ready in {time.time() - t:.0f}s")
-                    return True
-            except Exception:
-                pass
+            log = OLLAMA_LOG if ACTIVE_BACKEND == "ollama" else f"{LOG_DIR}/server.log"
+            print(open(log, errors="ignore").read()[-3000:])
+            fail("Server exited. Log above.")
+        try:
+            status, _ = local(HEALTH_PATH, timeout=5)
+            if status == 200:
+                print(f"✅ N-ATLaS server ready in {time.time() - t:.0f}s")
+                return True
+        except Exception:
+            pass
         time.sleep(5)
-    raise SystemExit("❌ Server did not become ready in time.")
+    fail("Server did not become ready in time.")
 
-server_proc = start_server()
 wait_until_ready(server_proc)
+status, models = local("/v1/models")
+print("/v1/models →", [m.get("id") for m in models.get("data", [])])
 
 # %%
-# ---------------------------------------------------------------- 7. Smoke test in Yoruba (runs on the GPU, not the internet)
+# ---------------------------------------------------------------- 6. Smoke test in Yoruba (runs on the GPU, not the internet)
 t = time.time()
 _, out = local("/v1/chat/completions", {
-    "model": "n-atlas",
+    "model": MODEL_NAME,
     "messages": [
         {"role": "system", "content": "You are N-ATLaS, a large language model trained by Awarri AI technologies. "
                                       "You are a friendly assistant and you are here to help."},
         {"role": "user", "content": "Báwo ni o ṣe wà? Ṣàlàyé ara rẹ ní gbólóhùn méjì."},
     ],
-    "max_tokens": 120, "temperature": 0.2, "repeat_penalty": 1.12,
-}, timeout=180)
-print(f"N-ATLaS replied in {time.time() - t:.1f}s:\n")
-print(out["choices"][0]["message"]["content"])
+    "max_tokens": 120, "temperature": 0.2,
+}, timeout=300)
+elapsed = time.time() - t
+reply = out["choices"][0]["message"]["content"]
+ntok = (out.get("usage") or {}).get("completion_tokens") or 0
+TOK_PER_S = None
+if ACTIVE_BACKEND == "ollama":
+    try:  # Ollama's native API reports exact decode speed
+        g = ollama_api("/api/generate", {"model": MODEL_NAME, "prompt": "Kọ ọ̀rọ̀ kúkúrú nípa Ìbàdàn.",
+                                          "stream": False, "options": {"num_predict": 64}}, timeout=300)
+        TOK_PER_S = g["eval_count"] / (g["eval_duration"] / 1e9)
+    except Exception as e:
+        print("speed probe failed:", e)
+if TOK_PER_S is None and ntok:
+    TOK_PER_S = ntok / elapsed
+WHERE = "GPU"
+if ACTIVE_BACKEND == "ollama":
+    frac, ps = ollama_gpu_report()
+    WHERE = f"{frac:.0%} GPU"
+    print(ps)
+print(f"N-ATLaS replied in {elapsed:.1f}s ({ntok} tokens; ~{(TOK_PER_S or 0):.1f} tok/s, {WHERE}):\n")
+print(reply)
+notify(f"Model up via {ACTIVE_BACKEND} on {WHERE} ({GPU_NAME}); ~{(TOK_PER_S or 0):.1f} tok/s. "
+       f"Yoruba test: {reply[:160]}", "N-ATLaS status")
 
 # %%
-# ---------------------------------------------------------------- 8. Public URL with a free Cloudflare quick tunnel
+# ---------------------------------------------------------------- 7. Public URL with a free Cloudflare quick tunnel
 import re, threading
 
 CLOUDFLARED = f"{WORK_DIR}/cloudflared"
@@ -263,8 +412,10 @@ PUBLIC_URL = None
 
 def start_tunnel():
     global PUBLIC_URL
-    proc = subprocess.Popen([CLOUDFLARED, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{PORT}"],
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    cmd = [CLOUDFLARED, "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{PORT}"]
+    if ACTIVE_BACKEND == "ollama":
+        cmd += ["--http-host-header", f"127.0.0.1:{PORT}"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     found = threading.Event()
     log = open(f"{LOG_DIR}/cloudflared.log", "a")
 
@@ -279,7 +430,7 @@ def start_tunnel():
 
     threading.Thread(target=reader, daemon=True).start()
     if not found.wait(90):
-        raise SystemExit("❌ cloudflared did not print a URL. Check internet, then re-run this cell.")
+        fail("cloudflared did not print a URL. Check internet, then re-run this cell.")
     return proc
 
 def announce(url):
@@ -287,55 +438,55 @@ def announce(url):
         f.write(url + "\n")
     bar = "=" * 72
     print(f"\n{bar}\n  N-ATLaS is live at:\n\n      {url}\n\n"
-          f"  OpenAI-compatible endpoint: {url}/v1/chat/completions\n"
+          f"  OpenAI-compatible endpoint: {url}/v1/chat/completions  (model: {MODEL_NAME})\n"
           f"  → Vercel: Settings → Environment Variables → NATLAS_BASE_URL = {url}\n"
-          f"    (then Deployments → ⋯ → Redeploy). Keep this tab open.\n{bar}\n")
-    if NTFY_TOPIC:
+          f"    (then Deployments → ⋯ → Redeploy). Keep this session running.\n{bar}\n", flush=True)
+    notify(url, "N-ATLaS URL")
+
+def wait_public(url):
+    for _ in range(24):  # DNS for a fresh quick tunnel can take a few seconds to propagate
         try:
-            urllib.request.urlopen(urllib.request.Request(f"https://ntfy.sh/{NTFY_TOPIC}", data=url.encode(),
-                                                          headers={"Title": "N-ATLaS URL"}), timeout=10)
-            print(f"📣 URL sent to https://ntfy.sh/{NTFY_TOPIC}")
+            with urllib.request.urlopen(url + HEALTH_PATH, timeout=10) as r:
+                if r.status == 200:
+                    return
         except Exception as e:
-            print("ntfy failed:", e)
+            if "401" in str(e):  # API key enabled: the tunnel works, auth is just required
+                return
+        time.sleep(5)
 
 tunnel_proc = start_tunnel()
-# DNS for a fresh quick tunnel can take a few seconds to propagate
-for _ in range(24):
-    try:
-        with urllib.request.urlopen(PUBLIC_URL + "/v1/models" if ACTIVE_BACKEND != "llama-server" else PUBLIC_URL + "/health",
-                                    timeout=10) as r:
-            if r.status == 200:
-                break
-    except Exception as e:
-        if "401" in str(e):  # API key enabled: the tunnel works, auth is just required
-            break
-    time.sleep(5)
+wait_public(PUBLIC_URL)
 announce(PUBLIC_URL)
 
 # %%
-# ---------------------------------------------------------------- 9. Keep alive (leave this running)
-# Kaggle keeps an interactive GPU session alive while a cell is running and the tab is open (max 12 h,
-# 30 GPU-hours per week). This loop watches the server and the tunnel and restarts either if it dies.
-# To stop: click ■ (Interrupt) then Run → "Stop session" so you don't waste GPU quota.
+# ---------------------------------------------------------------- 8. Keep alive (leave this running)
+# Kaggle keeps a GPU session alive while a cell is running (max 12 h, 30 GPU-hours per week).
+# This loop watches the server and the tunnel and restarts either if it dies.
+# To stop: click ■ (Interrupt) then Run → "Stop session" (or cancel the running version) to save GPU quota.
 started = time.time()
 try:
     while time.time() - started < KEEP_ALIVE_HOURS * 3600:
         time.sleep(60)
         if server_proc.poll() is not None:
             print("⚠️  Server stopped; restarting…")
-            server_proc = start_server()
+            if ACTIVE_BACKEND == "ollama":
+                server_proc = start_ollama()
+                ollama_api("/api/generate", {"model": MODEL_NAME, "prompt": "", "keep_alive": -1}, timeout=600)
+            else:
+                server_proc = start_llama(ACTIVE_BACKEND)
             wait_until_ready(server_proc)
         if tunnel_proc.poll() is not None:
             print("⚠️  Tunnel stopped; starting a new one (the URL WILL change)…")
             tunnel_proc = start_tunnel()
+            wait_public(PUBLIC_URL)
             announce(PUBLIC_URL)
         try:
-            status, _ = local("/health" if ACTIVE_BACKEND == "llama-server" else "/v1/models", timeout=10)
+            status, _ = local(HEALTH_PATH, timeout=10)
             state = "healthy" if status == 200 else f"HTTP {status}"
         except Exception as e:
             state = f"busy/unreachable ({type(e).__name__})"
         up = (time.time() - started) / 3600
-        print(f"[{time.strftime('%H:%M:%S')}] up {up:.1f} h · server {state} · {PUBLIC_URL}", flush=True)
+        print(f"[{time.strftime('%H:%M:%S')}] up {up:.1f} h · {ACTIVE_BACKEND} {state} · {PUBLIC_URL}", flush=True)
 except KeyboardInterrupt:
     print("Stopping…")
 finally:
