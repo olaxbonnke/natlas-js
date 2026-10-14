@@ -3,15 +3,17 @@ import type { ChatMessage } from "./types.js";
 
 /** The system prompt used in the official N-ATLaS model card example. */
 export const DEFAULT_SYSTEM_PROMPT =
-  "You are N-ATLaS, a large language model trained by Awarri AI technologies. You are a friendly assistant and you are here to help.";
+  "You are N-ATLaS, a large language model trained by Awarri AI technologies. You are a friendly assistant and you are here to help. " +
+  "You are having a natural conversation with the user: respond to the meaning of what they say, answer their questions and keep the conversation going. " +
+  "Never translate, correct or repeat the user's message back to them unless they ask you to.";
 
 /** Instruction appended to the system prompt when `replyIn` is set. */
 export function replyInInstruction(lang: LanguageCode): string {
   const info = LANGUAGES[lang];
   if (lang === "en") {
-    return `Always reply in English. ${info.orthography}`;
+    return "Always reply in English.";
   }
-  return `Always reply in ${info.name} (${info.nativeName}), even if the user writes in another language. ${info.orthography}`;
+  return `Always reply in ${info.name} (${info.nativeName}), even if the user writes in another language. Use correct ${info.name} spelling in your own replies, but do not rewrite or correct the user's words.`;
 }
 
 export interface TranslationPromptInput {
