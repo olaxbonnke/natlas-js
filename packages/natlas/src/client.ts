@@ -8,7 +8,7 @@ import {
   NAtlasValidationError,
   errorFromResponse,
 } from "./errors.js";
-import { LANGUAGES, normalizeLanguage, type LanguageCode } from "./languages.js";
+import { LANGUAGES, normalizeLanguage, detectLanguage, type LanguageCode } from "./languages.js";
 import {
   DEFAULT_SYSTEM_PROMPT,
   buildTranslationMessages,
@@ -274,7 +274,17 @@ export class NAtlas {
       return list;
     }
     let system = opts.system ?? this.systemPrompt;
-    if (opts.replyIn) system = `${system}\n${replyInInstruction(opts.replyIn)}`;
+    if (opts.replyIn) {
+      system = `${system}\n${replyInInstruction(opts.replyIn)}`;
+    } else {
+      // Auto: answer in the language of the user's latest message.
+      const lastUser = [...list].reverse().find((m) => m.role === "user");
+      const detected = lastUser ? detectLanguage(lastUser.content) : "en";
+      system =
+        detected === "en"
+          ? `${system}\nReply in the same language as the user's latest message.`
+          : `${system}\nThe user is writing in ${LANGUAGES[detected].name}. ${replyInInstruction(detected)}`;
+    }
     return [{ role: "system", content: system }, ...list];
   }
 

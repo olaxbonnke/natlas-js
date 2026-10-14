@@ -105,3 +105,30 @@ export function getLanguage(value: string): LanguageInfo {
   }
   return LANGUAGES[code];
 }
+
+const WORD_HINTS: Record<Exclude<LanguageCode, "en">, string[]> = {
+  yo: ["bawo", "báwo", "kaaro", "káàárọ̀", "kaale", "káalẹ́", "kaasan", "e kaabo", "ekaabo", "ese", "ẹ ṣé", "o se", "ọ ṣé", "kini", "kí ni", "nibo", "níbo", "mo fe", "mo fẹ́", "mi o", "mi ò", "se daadaa", "dáadáa", "daadaa", "ejo", "ẹ jọ̀wọ́", "jowo", "omo", "ọmọ", "oruko", "orúkọ", "ile", "ilé", "ounje", "oúnjẹ", "amala", "àmàlà", "eko", "ẹ̀kọ́", "nigba", "nígbà", "wa", "ni", "ati", "àti", "awon", "àwọn", "o dabo", "ó dàbọ̀", "pele", "pẹ̀lẹ́"],
+  ha: ["sannu", "yaya", "ina kwana", "ina wuni", "nagode", "na gode", "lafiya", "kai", "ina", "yaushe", "menene", "mene ne", "don allah", "barka", "abinci", "gida", "aiki", "zan", "kuma", "suna", "ne", "da", "ba", "ka", "ki"],
+  ig: ["kedu", "ndewo", "daalụ", "daalu", "biko", "nnọọ", "nnoo", "ụtụtụ ọma", "ututu oma", "gịnị", "gini", "ebee", "olee", "achọrọ", "achoro", "nri", "ụlọ", "ulo", "aha", "na", "nke", "ka", "m", "ọ", "ị"],
+};
+
+/**
+ * Best-effort guess of the language a short message is written in, used when
+ * the caller did not set `replyIn`. It looks at characters unique to each
+ * orthography and at common words, so it also works on unaccented text such as
+ * "bawo ni" or "e kaale sir". Returns "en" when nothing points elsewhere.
+ */
+export function detectLanguage(text: string): LanguageCode {
+  const t = ` ${text.toLowerCase().normalize("NFC").replace(/[^\p{L}\p{M}\s']/gu, " ").replace(/\s+/g, " ")} `;
+  const score: Record<Exclude<LanguageCode, "en">, number> = { yo: 0, ha: 0, ig: 0 };
+  if (/[ẹọṣ]/u.test(t) || /[àèìòù]/u.test(t)) score.yo += 2;
+  if (/[ụịṅ]/u.test(t)) score.ig += 3;
+  if (/[ɓɗƙƴ]/u.test(t)) score.ha += 3;
+  for (const lang of ["yo", "ha", "ig"] as const) {
+    for (const w of WORD_HINTS[lang]) {
+      if (t.includes(` ${w} `)) score[lang] += w.length <= 2 ? 0.5 : 2;
+    }
+  }
+  const [best, value] = (Object.entries(score) as Array<[LanguageCode, number]>).sort((a, b) => b[1] - a[1])[0]!;
+  return value >= 2 ? best : "en";
+}

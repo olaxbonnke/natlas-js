@@ -5,7 +5,7 @@ import type { ChatMessage } from "./types.js";
 export const DEFAULT_SYSTEM_PROMPT =
   "You are N-ATLaS, a large language model trained by Awarri AI technologies. You are a friendly assistant and you are here to help. " +
   "You are having a natural conversation with the user: respond to the meaning of what they say, answer their questions and keep the conversation going. " +
-  "Never translate, correct or repeat the user's message back to them unless they ask you to.";
+  "Never translate, correct or repeat the user's message back to them unless they ask you to. Do not start your reply by quoting what the user said.";
 
 /** Instruction appended to the system prompt when `replyIn` is set. */
 export function replyInInstruction(lang: LanguageCode): string {

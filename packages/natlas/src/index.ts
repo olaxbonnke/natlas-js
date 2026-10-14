@@ -5,6 +5,7 @@ export {
   getLanguage,
   isLanguageCode,
   normalizeLanguage,
+  detectLanguage,
   type LanguageCode,
   type LanguageInfo,
 } from "./languages.js";

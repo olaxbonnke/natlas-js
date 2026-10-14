@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  replyInInstruction,
   DEFAULT_SYSTEM_PROMPT,
   NAtlas,
   NAtlasAbortError,
@@ -75,7 +76,7 @@ describe("chat()", () => {
       repeat_penalty: 1.12,
     });
     expect(body.messages).toEqual([
-      { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+      { role: "system", content: `${DEFAULT_SYSTEM_PROMPT}\nThe user is writing in Yoruba. ${replyInInstruction("yo")}` },
       { role: "user", content: "Báwo ni?" },
     ]);
     expect(body).not.toHaveProperty("top_p");
@@ -289,5 +290,19 @@ describe("models()", () => {
   it("lists models", async () => {
     const f = mockFetch(jsonResponse({ object: "list", data: [{ id: "N-ATLaS.Q4_K_M.gguf" }] }));
     expect(await client(f).models()).toEqual([{ id: "N-ATLaS.Q4_K_M.gguf" }]);
+  });
+});
+
+import { detectLanguage } from "../src/index.js";
+describe("detectLanguage (auto reply language)", () => {
+  it("spots unaccented Yoruba, Hausa and Igbo", () => {
+    expect(detectLanguage("bawo ni")).toBe("yo");
+    expect(detectLanguage("e kaale sir")).toBe("yo");
+    expect(detectLanguage("kini ago")).toBe("yo");
+    expect(detectLanguage("Kí ni olú ìlú Nàìjíríà?")).toBe("yo");
+    expect(detectLanguage("Sannu, yaya kake?")).toBe("ha");
+    expect(detectLanguage("Kedu ka ị mere?")).toBe("ig");
+    expect(detectLanguage("hi")).toBe("en");
+    expect(detectLanguage("What is the capital of Nigeria?")).toBe("en");
   });
 });
