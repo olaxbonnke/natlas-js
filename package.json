@@ -10,10 +10,10 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w natlas-js && npm run build -w natlas-playground",
-    "build:sdk": "npm run build -w natlas-js",
-    "test": "npm run test -w natlas-js",
-    "typecheck": "npm run typecheck -w natlas-js",
+    "build": "npm run build -w @olaxbonnke/natlas-js && npm run build -w natlas-playground",
+    "build:sdk": "npm run build -w @olaxbonnke/natlas-js",
+    "test": "npm run test -w @olaxbonnke/natlas-js",
+    "typecheck": "npm run typecheck -w @olaxbonnke/natlas-js",
     "dev": "npm run build:sdk && npm run dev -w natlas-playground",
     "docs:pdf": "bash scripts/build-docs.sh"
   },
