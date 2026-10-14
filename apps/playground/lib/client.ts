@@ -57,11 +57,11 @@ export function friendlyError(err: unknown): FriendlyError {
   if (err instanceof NAtlasAPIError) {
     const code = (err.body as { error?: { code?: string } } | undefined)?.error?.code;
     if (code === "model_offline")
-      return { kind: "offline", message: "N-ATLaS is offline right now: the free GPU notebook serving it is not running." };
+      return { kind: "offline", message: "N-ATLaS is resting right now (the free GPU notebook that serves it is switched off). The live SDK code still shows exactly how to call it." };
     if (code === "model_loading" || err.code === "model_loading")
       return { kind: "loading", message: "N-ATLaS is waking up (loading weights onto the GPU). Try again in a minute." };
     if (code === "not_configured")
-      return { kind: "config", message: "This deployment has no N-ATLaS endpoint yet. Set NATLAS_BASE_URL and redeploy." };
+      return { kind: "config", message: "Demo mode: the model isn't connected to this deployment yet, so replies are paused. The live SDK code still shows exactly how to call it." };
     if (err.status === 429) return { kind: "rate", message: "You're sending messages quickly. Give it a few seconds." };
     return { kind: "other", message: err.message };
   }

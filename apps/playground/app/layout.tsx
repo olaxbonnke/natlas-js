@@ -13,13 +13,22 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#008751",
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f4f7f4" },
+    { media: "(prefers-color-scheme: dark)", color: "#070d0a" },
+  ],
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-screen font-sans">{children}</body>
+      <body className="min-h-[100dvh] font-sans">
+        <div className="backdrop" aria-hidden />
+        {children}
+      </body>
     </html>
   );
 }
