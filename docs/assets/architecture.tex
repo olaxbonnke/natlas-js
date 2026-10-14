@@ -15,14 +15,14 @@
   arr/.style={-{Stealth[length=7pt]}, line width=1pt, draw=naija},
   note/.style={font=\scriptsize\color{muted}, align=center, fill=white, inner sep=1.5pt},
 ]
-\node[box] (sdk) at (0,3) {\textbf{Your app}\\ natlas-js SDK};
+\node[box] (sdk) at (0,3) {\textbf{Your app / bots}\\ natlas-js SDK};
 \node[box] (cli) at (0,1.2) {\textbf{CLI}\\ npx @olaxbonnke/natlas-js};
 \node[box] (ui)  at (-0.2,-1.6) {\textbf{Playground UI}\\ Next.js in the browser};
 
 \node[box] (tunnel) at (6.4,1.2) {\textbf{Cloudflare quick tunnel}\\ https://*.trycloudflare.com};
 \node[box] (relay)  at (6.4,-1.6) {\textbf{Relay} /api/v1/chat/completions\\ + /api/health\\ \scriptsize reads NATLAS\_BASE\_URL};
 
-\node[box] (server) at (12.4,1.2) {\textbf{llama.cpp llama-server}\\ :8000, OpenAI-compatible};
+\node[box] (server) at (12.4,1.2) {\textbf{Ollama} :11434\\ \scriptsize (fallback: llama.cpp :8000)\\ \scriptsize OpenAI-compatible};
 \node[store] (model) at (12.4,-1.6) {\textbf{N-ATLaS 8B}\\ GGUF Q4\_K\_M, 4.9 GB\\ on a T4 GPU (16 GB)};
 \node[store] (hf) at (12.4,4.0) {\textbf{Hugging Face}\\ NCAIR1/N-ATLaS (terms)\\ QuantFactory/N-ATLaS-GGUF};
 

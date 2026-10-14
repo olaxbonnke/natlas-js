@@ -9,13 +9,16 @@ date: "October 2026 · version 0.1.0"
 
 **natlas-js** is open-source developer infrastructure that makes **N-ATLaS**, Nigeria's multilingual large language
 model for Yoruba, Hausa, Igbo and Nigerian English, usable from the JavaScript/TypeScript ecosystem at **zero hosting
-cost**. It has three parts:
+cost**. It has four parts:
 
 | Component | Location | Purpose |
 |---|---|---|
-| `natlas-js` SDK | `packages/natlas` | Zero-dependency TypeScript client: chat, streaming, translation, language helpers, typed errors, timeouts, retries, health checks, CLI. ESM + CommonJS + type declarations. |
-| Playground | `apps/playground` | Next.js web app (Vercel free tier) for streaming chat and translation, with Yoruba/Hausa/Igbo samples and a live code panel that shows the SDK call for the current request. |
-| Free GPU server | `server/` | Kaggle/Colab notebook that serves N-ATLaS with llama.cpp on a free NVIDIA T4 as an OpenAI-compatible API, published through a free Cloudflare quick tunnel. |
+| `natlas-js` SDK | `packages/natlas` | Zero-dependency TypeScript client: chat, streaming, translation, language helpers, typed errors, timeouts, retries, health checks, CLI. ESM + CommonJS + type declarations. React hooks (`useNatlas`, `useTranslate`) at `@olaxbonnke/natlas-js/react`. |
+| Playground | `apps/playground` | Next.js web app on the Vercel free tier, live at <https://natlas-playground-gamma.vercel.app/>: streaming chat and translation, Yoruba/Hausa/Igbo samples and a live code panel that shows the SDK call for the current request. |
+| Bot examples | `examples/whatsapp-bot`, `examples/telegram-bot` | Ready-to-deploy WhatsApp Cloud API and Telegram bots built on the SDK, with per-user memory and `/help`, `/lang`, `/translate`, `/reset`. |
+| Free GPU server | `server/` | Kaggle/Colab notebook that serves N-ATLaS on a free NVIDIA T4 with Ollama (llama.cpp CUDA fallback) as an OpenAI-compatible API, published through a free Cloudflare quick tunnel. |
+
+Source code: <https://github.com/olaxbonnke/natlas-js> (MIT).
 
 Every response produced by the system comes from N-ATLaS. No other foundation model or hosted AI API is used
 anywhere in the stack.
@@ -61,8 +64,8 @@ A free Kaggle T4 has 16 GB of VRAM, so the FP16 weights are served as a 4-bit GG
 | Why | Most-downloaded N-ATLaS GGUF (≈3.5k downloads), not gated, includes the Llama-3.1 chat template in its metadata (verified by reading the GGUF header), file type 15 = Q4_K_M. |
 | Alternative | `tosinamuda/N-ATLaS-GGUF` → `N-ATLaS-GGUF-Q4_K_M.gguf` (same size). |
 
-Users still accept the official terms because they apply to all copies and derivatives of the weights. The notebook
-checks with the user's token that `NCAIR1/N-ATLaS` is accessible and warns if not.
+Users should still accept the official terms, because they apply to all copies and derivatives of the weights. The
+GGUF itself is public, so the notebook's `HF_TOKEN` secret is optional.
 
 ## Licence obligations that shape the design
 
@@ -79,12 +82,16 @@ checks with the user's token that `NCAIR1/N-ATLaS` is accessible and warns if no
 
 ## Components
 
-1. **Inference server (Kaggle notebook).** Builds llama.cpp's `llama-server` with CUDA for the T4 (`sm_75`), loads
-   the GGUF with all layers on the GPU, 8,192-token context and 2 parallel slots, and exposes `/v1/chat/completions`,
-   `/v1/models` and `/health` on port 8000. If the build fails it falls back to a prebuilt CUDA wheel of
-   `llama-cpp-python` (0.3.4) running `llama_cpp.server`, which offers the same OpenAI-compatible routes.
-2. **Cloudflare quick tunnel.** `cloudflared tunnel --url http://127.0.0.1:8000` publishes the server at a random
-   `https://*.trycloudflare.com` URL with TLS, no account and no open ports. The URL changes each session.
+1. **Inference server (Kaggle notebook).** The primary engine is **Ollama** (prebuilt CUDA, nothing to compile): it
+   pulls `hf.co/QuantFactory/N-ATLaS-GGUF:Q4_K_M`, registers it as `n-atlas`, keeps it loaded on the GPU
+   (`OLLAMA_KEEP_ALIVE=-1`, 8,192-token context, 2 parallel requests) and serves Ollama's OpenAI-compatible
+   `/v1/chat/completions` and `/v1/models` on port 11434. The notebook checks that at least 90% of the model sits in
+   VRAM. If Ollama fails, it downloads the GGUF and builds llama.cpp's `llama-server` with CUDA for the T4 (`sm_75`)
+   on port 8000 (`/health` too); if that fails, a prebuilt CUDA wheel of `llama-cpp-python` 0.3.4. Every path serves
+   the model under the id `n-atlas`.
+2. **Cloudflare quick tunnel.** `cloudflared tunnel --url http://127.0.0.1:<port>` publishes the server at a random
+   `https://*.trycloudflare.com` URL with TLS, no account and no open ports (for Ollama the `Host` header is rewritten
+   to `127.0.0.1`). The URL changes each session.
 3. **SDK.** Talks to any OpenAI-compatible base URL. It is the only client code in the system: the CLI and the
    playground UI both use it.
 4. **Playground relay (Vercel).** `POST /api/v1/chat/completions` validates and forwards requests to
@@ -107,7 +114,7 @@ Because the tunnel URL changes every session, every component reads it from one 
 2. The SDK prepends the system prompt (plus a reply-language instruction), builds an OpenAI-style body with
    `stream: true` and `repeat_penalty: 1.12`, and POSTs to `/api/v1/chat/completions`.
 3. The relay validates, clamps parameters, rate-limits by IP and forwards to `${NATLAS_BASE_URL}/v1/chat/completions`.
-4. Cloudflare forwards to `llama-server`, which applies the GGUF's Llama-3.1 chat template and streams Server-Sent Events.
+4. Cloudflare forwards to Ollama (or `llama-server`), which applies the Llama-3.1 chat template and streams Server-Sent Events.
 5. The relay passes the SSE body through unchanged. The SDK parses it into `{ delta, text }` chunks; the UI renders
    tokens as they arrive. Stop aborts the fetch, which cancels the upstream request and frees the GPU slot.
 6. Failures map to typed errors and friendly states: tunnel down → "offline"; weights loading → "waking up";
@@ -117,10 +124,10 @@ Because the tunnel URL changes every session, every component reads it from one 
 
 | Decision | Reason |
 |---|---|
-| OpenAI-compatible wire format | Works with llama.cpp, llama-cpp-python and vLLM unchanged; developers already know it. It is a protocol choice only: the model is always N-ATLaS. |
+| OpenAI-compatible wire format | Works with Ollama, llama.cpp, llama-cpp-python and vLLM unchanged; developers already know it. It is a protocol choice only: the model is always N-ATLaS. |
 | Zero runtime dependencies, platform `fetch` | Small bundle; runs in Node 18+, browsers, Deno, Bun, edge runtimes and React Native. |
-| GGUF Q4_K_M + llama.cpp | Fits a free 16 GB T4 with room for 8k context; mature CUDA kernels; built-in `/health` and parallel slots. |
-| Build llama.cpp for `sm_75` only | Cuts CUDA compile time to minutes on Kaggle's CPUs. |
+| GGUF Q4_K_M | 4.92 GB fits a free 16 GB T4 with room for 8k context. |
+| Ollama first, llama.cpp as fallback | Ollama ships prebuilt CUDA binaries, so start-up needs no compile; llama.cpp (built for `sm_75` only, minutes on Kaggle's CPUs) and a prebuilt wheel cover the case where Ollama cannot use the GPU. |
 | Cloudflare quick tunnel | Free, no account, HTTPS, works from inside Kaggle without inbound ports. |
 | Relay instead of calling the tunnel from the browser | Hides the tunnel URL and API key, adds validation and rate limits, and lets the URL change without rebuilding the frontend. |
 | Model-card defaults | System prompt and `repeat_penalty` 1.12 come from the official example; translation uses temperature 0.1. |
@@ -237,22 +244,34 @@ for await (const c of natlas.chatStream("Menene amfanin noman rani?", { replyIn:
   process.stdout.write(c.delta);
 }
 
-const { text } = await natlas.translate("Wash your hands before eating.", { from: "en", to: "ig", domain: "health" });
+const { text } = await natlas.translate("Wash your hands before eating.",
+  { from: "en", to: "ig", domain: "health" });
 ```
 
 ## React hooks
 
-`@olaxbonnke/natlas-js/react` (React 18+ as an optional peer dependency) wraps `chatStream()` and `translate()` as React state.
+`@olaxbonnke/natlas-js/react` (React 18+ as an optional peer dependency) wraps `chatStream()`, `translate()` and
+`translateStream()` as React state.
 
 ```tsx
 "use client";
 import { useNatlas, useTranslate } from "@olaxbonnke/natlas-js/react";
 
-const { messages, send, translate, isLoading, isStreaming, error, stop, reset } = useNatlas({ baseUrl: "/api", replyIn: "yo" });
-const { translation, translate: tr } = useTranslate({ baseUrl: "/api", defaults: { to: "ha" }, stream: true });
+const { messages, send, isLoading, isStreaming, error, stop, reset } =
+  useNatlas({ baseUrl: "/api", replyIn: "yo" });
+
+const { translation, translate } =
+  useTranslate({ baseUrl: "/api", defaults: { to: "ha" }, stream: true });
 ```
 
-`send()` appends the user turn, streams the assistant reply into `messages` and sends the full history on each turn.
+| Hook | Options | Returns |
+|---|---|---|
+| `useNatlas` | `NAtlas` options or `client`; `initialMessages`, `chatOptions`, `replyIn`, `onToken`, `onFinish`, `onError` | `messages`, `send`, `translate`, `isLoading`, `isStreaming`, `error`, `stop`, `reset`, `setMessages` |
+| `useTranslate` | `NAtlas` options or `client`; `stream` (default `false`), `defaults` (`from`, `to`, `domain`, `tone` …) | `translation`, `result`, `translate`, `isLoading`, `error`, `stop`, `reset` |
+
+`send()` appends the user turn, streams the assistant reply into `messages` and sends the full history on each turn; on
+error it drops the empty reply but keeps the user's turn so it can be retried. A new `send()` aborts the previous one,
+and unmounting aborts any request in flight.
 `stop()` aborts through an `AbortController` and keeps the partial reply; `error` holds the typed `NAtlasError`. The client
 is created lazily on first use (never during render), so the hooks are safe under server rendering; the build keeps the
 `"use client"` directive, and the React entry imports the core by package name so apps bundle one copy of the SDK.
@@ -262,7 +281,8 @@ is created lazily on first use (never during render), so the hooks are safe unde
 `examples/whatsapp-bot` is a WhatsApp Cloud API webhook (web-standard `Request -> Response` handler, deployable as a Vercel
 function or a plain `node:http` server): `GET` answers Meta's verification challenge, `POST` replies to incoming text via
 the Graph API, with optional `X-Hub-Signature-256` verification and de-duplication of re-delivered messages.
-`examples/telegram-bot` long-polls the Bot API over `fetch` and streams replies by editing its message. Both share the same
+`examples/telegram-bot` long-polls the Bot API over `fetch` (no webhook or public URL needed), shows "typing…" and
+streams replies by editing its message. Both share the same
 transport-agnostic core: per-user in-memory conversation history (last 10 turns, 6 h TTL) and the commands `/help`,
 `/lang <en|yo|ha|ig|off>`, `/translate <to|from:to> <text>` and `/reset`. Environment: `WHATSAPP_TOKEN`,
 `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN` (WhatsApp) or `TELEGRAM_BOT_TOKEN` (Telegram), plus `NATLAS_BASE_URL`
@@ -292,15 +312,22 @@ output only the translation. User message: `Translate from English into Yoruba:`
 
 # Playground
 
-## Features
+Live at <https://natlas-playground-gamma.vercel.app/>.
 
-- Chat tab: streaming, "reply in" language picker (or same as the message), temperature and max-token controls,
-  Stop, Clear and Retry; sample prompts in Yoruba, Hausa, Igbo and English.
-- Translate tab: source (with auto-detect) and target pickers, swap, copy, streaming output, six sample phrases.
-- Code panel: the exact natlas-js TypeScript call, the equivalent `curl`, and install steps, regenerated live from
-  the current request.
-- Status pill and banner from `/api/health`, polled every 30 s (10 s while loading).
-- Design: Nigerian-flag green (#008751) and white, accessible contrast, responsive layout, system fonts.
+- **Layout.** Mobile-first: on phones a segmented control switches between **Chat | Translate | Code**; on desktop
+  the code panel stays pinned beside the active Chat or Translate panel.
+- **Chat.** Streaming replies, "Reply in" picker (Auto or a language), Stop, Retry and New chat, and one-tap sample
+  prompts in Yoruba, Hausa, Igbo and English. Temperature (0-1) and max tokens (128/256/512/1024) live in a settings
+  popover that opens as a bottom sheet on phones.
+- **Translate.** Source (with auto-detect) and target pickers, swap, copy, streaming output, six sample phrases.
+- **Code panel.** TS, cURL and Install tabs with copy: the exact natlas-js call and the equivalent `curl`, regenerated
+  live from the current request.
+- **Friendly states.** A status pill and a collapsible notice read `/api/health` (polled every 30 s, 10 s while
+  loading): *Online* with latency, *Waking up* (weights loading or the free GPU notebook resting), *Demo mode* (no
+  endpoint configured; samples and SDK code still work) and *Key mismatch*. Chat errors are shown in plain language.
+- **Design.** Apple-inspired glass surfaces (backdrop blur, with a denser fill on phones for performance), a
+  Nigerian-flag green (#008751) accent stripe, an Adire-inspired background pattern with subtle grain, automatic dark
+  mode via `prefers-color-scheme`, 40-44 px touch targets and safe-area padding, system fonts.
 
 ## Relay contract (`POST /api/v1/chat/completions`)
 
@@ -323,28 +350,28 @@ own `health()` also works against `/api`. Upstream details are never echoed, whi
 The step-by-step beginner guide is `server/README.md`. In short:
 
 1. Create Hugging Face and Kaggle accounts; phone-verify Kaggle (unlocks GPU and internet).
-2. Accept the N-ATLaS terms at `huggingface.co/NCAIR1/N-ATLaS`; create a **Read** token.
-3. Import `server/kaggle_natlas_server.ipynb` into Kaggle; add the secret `HF_TOKEN` (optional: `NATLAS_API_KEY`,
-   `NTFY_TOPIC`).
-4. Settings: Accelerator **GPU T4**, Internet **On**. **Run All**.
-5. Copy the printed `https://….trycloudflare.com` URL.
+2. Accept the N-ATLaS terms at `huggingface.co/NCAIR1/N-ATLaS`.
+3. Import `server/kaggle_natlas_server.ipynb` into Kaggle. Optional secrets: `HF_TOKEN`, `NATLAS_API_KEY`, `NTFY_TOPIC`.
+4. Settings: Accelerator **GPU T4** (or T4 x2), Internet **On**. **Run All**.
+5. Copy the printed `https://….trycloudflare.com` URL (also pushed to ntfy) into Vercel as `NATLAS_BASE_URL`.
 
-| Notebook cell | Action |
-|---|---|
-| 1 | Settings: GGUF repo/file, port 8000, context 8192, 2 parallel slots, backend |
-| 2 | Verify GPU (`nvidia-smi`) and internet |
-| 3 | Read secrets (Kaggle `UserSecretsClient` or Colab `userdata`), `huggingface_hub.login`, check terms accepted |
-| 4 | `hf_hub_download` the GGUF to `/tmp/natlas/models` (outside saved output), verify SHA-256 |
-| 5 | Build `llama-server` with `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75`; fallback: `llama-cpp-python==0.3.4` CUDA wheel |
-| 6 | Start the server (`-ngl 99 -c 8192 --parallel 2 --alias n-atlas --jinja [--api-key]`), wait for `/health` |
-| 7 | Yoruba smoke test through the local API |
-| 8 | Download `cloudflared`, start a quick tunnel, parse and print the URL, verify it through the tunnel |
-| 9 | Keep-alive loop: heartbeat every minute, restarts the server or tunnel if either exits (a new tunnel means a new URL) |
+| Cell | Action |
+|--|------------------------------|
+| 1 | Settings: GGUF repo/file, model id `n-atlas`, context 8192, 2 parallel, backend (`NATLAS_BACKEND`, default `ollama`) |
+| 2 | Helpers; read secrets (Kaggle `UserSecretsClient` or Colab `userdata`); verify GPU (`nvidia-smi`) and internet; ntfy status push |
+| 3 | Backend A: install Ollama, `ollama serve` on :11434, pull `hf.co/QuantFactory/N-ATLaS-GGUF:Q4_K_M` (or create from a downloaded GGUF with a Llama-3.1 Modelfile), copy to `n-atlas`, preload, require ≥ 90% on the GPU |
+| 4 | Backends B/C: download GGUF and verify SHA-256; build `llama-server` (`-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75`); else `llama-cpp-python==0.3.4` CUDA wheel (cu124/122/121, GPU offload checked) |
+| 5 | Pick the first backend that works, start it, wait until ready (`/health` or `/v1/models`) |
+| 6 | Yoruba smoke test through the local API; prints reply, tokens/s and GPU placement |
+| 7 | Download `cloudflared`, start a quick tunnel, parse the URL, verify it through the tunnel, write `natlas_url.txt` |
+| 8 | Keep-alive loop (11.5 h): checks every minute, restarts the server or tunnel if either exits (a new tunnel means a new URL) |
 
 Kaggle limits (per Kaggle documentation): GPU sessions up to 12 hours, a weekly GPU quota of about 30 hours, and an
 idle timeout for interactive sessions (a running cell counts as activity). The same notebook runs on Google Colab.
 
 ## Playground (Vercel)
+
+The public deployment is <https://natlas-playground-gamma.vercel.app/>. To deploy your own:
 
 1. Import the repository; set **Root Directory** to `apps/playground` (npm workspaces are installed from the root).
 2. Environment variables: `NATLAS_BASE_URL` (required), `NATLAS_API_KEY` (optional), `NATLAS_RATE_LIMIT_PER_MIN`.
@@ -354,7 +381,8 @@ idle timeout for interactive sessions (a running cell counts as activity). The s
 
 ```bash
 npm install
-npm test                 # SDK unit tests
+npm test                 # SDK unit tests (58)
+npm run test:examples    # WhatsApp (19) and Telegram (15) bot tests
 npm run build            # SDK + playground
 npm run dev              # playground on :3000
 node scripts/mock-natlas-server.mjs   # DEV ONLY: fake endpoint returning "[mock]" text, no model
@@ -366,7 +394,9 @@ public deployment.
 # Security and responsible use
 
 - API keys stay server-side (Kaggle secret, Vercel env); the browser never sees the key or the tunnel URL.
-- Optional bearer-token protection on the tunnel (`llama-server --api-key`).
+- Optional bearer-token protection on the tunnel (`NATLAS_API_KEY`, enforced by the llama.cpp backends; the Ollama
+  path does not check it, so treat its URL as public).
+- WhatsApp webhook: optional `X-Hub-Signature-256` verification with the app secret.
 - Input validation, parameter clamping and per-IP rate limiting on the relay.
 - The translation prompt tells the model to translate, not execute, instructions in the input.
 - The UI tells users that replies come from N-ATLaS and should be checked by fluent speakers for important use.
@@ -377,16 +407,19 @@ public deployment.
 
 | Check | Result |
 |---|---|
-| SDK unit tests (vitest, mocked `fetch`) | **43 tests passing** across client, translation and SSE suites: request bodies, env config, retries and back-off, 401/429/503/530 mapping, timeouts, abort, SSE split across chunks, CRLF, multi-byte UTF-8, in-stream errors, non-stream fallback, health states, prompt templates, output cleaning |
+| SDK unit tests (vitest, mocked `fetch`) | **58 tests passing** across client, translation, SSE and React suites: request bodies, env config, retries and back-off, 401/429/503/530 mapping, timeouts, abort, SSE split across chunks, CRLF, multi-byte UTF-8, in-stream errors, non-stream fallback, health states, prompt templates, output cleaning, hook streaming/stop/reset/errors |
+| Bot example tests (vitest) | **WhatsApp 19, Telegram 15 passing**: commands, per-user memory, webhook verification and signatures, message de-duplication, reply flow |
 | SDK type-check (`tsc --noEmit`, strict) | clean |
 | SDK build (tsup) | ESM, CJS, `.d.ts`/`.d.cts` and CLI built; both module formats load in Node |
 | Playground `next build` | succeeds (Next.js 15.5, static page + two dynamic API routes) |
+| Playground deployment | live on Vercel at <https://natlas-playground-gamma.vercel.app/>; demo/offline states render when no endpoint is connected |
 | End-to-end with the mock server | relay streaming and non-streaming, validation errors, offline (503 `model_offline`), loading (503 `model_loading`), CLI and examples through the relay |
 | Real Cloudflare quick tunnel | the notebook's tunnel-start and URL-parsing logic was exercised with `cloudflared` against the mock server; the SDK streamed a reply through a live `trycloudflare.com` URL |
 | Notebook | valid nbformat 4 JSON; the `.py` source compiles |
 
-**Not yet verified:** a full run on a Kaggle T4 (CUDA build time, load time, tokens per second and real N-ATLaS
-outputs). These are measured with the evaluation harness in §12 at the first live session.
+**Not yet verified in this repository:** published Kaggle T4 measurements (load time, tokens per second, latency) and
+rated N-ATLaS outputs. The notebook prints tokens/s and GPU placement at start-up; systematic numbers will be
+measured with the evaluation harness in §12 and published in the repository.
 
 # Limitations
 
@@ -426,9 +459,9 @@ required by section 6 of the N-ATLaS terms (transparent reporting of accuracy, b
 
 1. Publish `natlas-js` to npm with provenance; GitHub Actions CI (tests, build, notebook lint).
 2. `natlas-py`, a Python twin with the same API.
-3. React hooks (`useNAtlasChat`, `useTranslate`) and a drop-in chat widget.
+3. A drop-in chat widget built on the React hooks, and a React Native example.
 4. N-ATLaS ASR models (speech-to-text for Yoruba, Hausa, Igbo, Nigerian English) behind the same SDK.
-5. Tool calling / JSON output once validated on N-ATLaS.
+5. Tool calling / JSON output once validated on N-ATLaS; voice notes for the WhatsApp and Telegram bots.
 6. Published evaluation results (§12).
 7. More persistent free or low-cost hosting (community GPU grants, university partners) and a shared endpoint with fair-use limits.
 
@@ -437,7 +470,7 @@ required by section 6 of the N-ATLaS terms (transparent reporting of accuracy, b
 N-ATLaS is an initiative of the Federal Ministry of Communications, Innovation and Digital Economy, and powered by
 Awarri Technologies, with the National Information Technology Development Agency (NITDA) and the National Centre
 for Artificial Intelligence and Robotics (NCAIR). Model: <https://huggingface.co/NCAIR1/N-ATLaS>. Quantized file:
-QuantFactory/N-ATLaS-GGUF (community). Inference: llama.cpp (MIT) and llama-cpp-python (MIT). Tunnel: Cloudflare
+QuantFactory/N-ATLaS-GGUF (community). Inference: Ollama (MIT), llama.cpp (MIT) and llama-cpp-python (MIT). Tunnel: Cloudflare
 `cloudflared`.
 
 natlas-js source code © 2026 Bonnke Olaitan, MIT licence. The model weights remain under the Terms of Use for N-ATLaS.
@@ -450,15 +483,17 @@ natlas-js/
 ├── LICENSE                      MIT (code) + note on the model licence
 ├── README.md
 ├── packages/natlas/             natlas-js SDK
-│   ├── src/  client.ts errors.ts languages.ts prompts.ts sse.ts types.ts cli.ts index.ts
-│   ├── test/ client.test.ts translate.test.ts sse.test.ts helpers.ts
+│   ├── src/  client.ts errors.ts languages.ts prompts.ts sse.ts types.ts cli.ts index.ts react.ts
+│   ├── test/ client.test.ts translate.test.ts sse.test.ts react.test.ts helpers.ts
 │   └── tsup.config.ts vitest.config.ts tsconfig.json README.md
 ├── apps/playground/             Next.js 15 + Tailwind
 │   ├── app/ page.tsx layout.tsx globals.css api/v1/chat/completions/route.ts api/health/route.ts
-│   ├── components/ Playground ChatPanel TranslatePanel CodePanel StatusPill LanguageSelect
+│   ├── components/ Playground ChatPanel TranslatePanel CodePanel StatusPill LanguageSelect icons
 │   └── lib/ client.ts samples.ts snippets.ts server-config.ts
 ├── server/ kaggle_natlas_server.ipynb kaggle_natlas_server.py README.md
 ├── examples/ basic-chat.mjs streaming.mjs translate.mjs error-handling.mjs eval/
+│   ├── whatsapp-bot/            api/webhook.ts src/ test/ vercel.json
+│   └── telegram-bot/            src/ test/
 ├── docs/ TECHNICAL_DOCUMENTATION.md natlas-js-technical-documentation.pdf assets/
 └── scripts/ mock-natlas-server.mjs py2ipynb.py build-docs.sh
 ```
