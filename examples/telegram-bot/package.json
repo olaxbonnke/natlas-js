@@ -1,0 +1,25 @@
+{
+  "name": "natlas-telegram-bot",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Long-polling Telegram bot for N-ATLaS (plain Bot API over fetch), built on @olaxbonnke/natlas-js.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "dev": "npm run build && node --env-file=.env dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@olaxbonnke/natlas-js": "file:../../packages/natlas"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  },
+  "engines": {
+    "node": ">=20.6"
+  }
+}

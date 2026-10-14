@@ -19,6 +19,16 @@
         "default": "./dist/index.cjs"
       }
     },
+    "./react": {
+      "import": {
+        "types": "./dist/react.d.ts",
+        "default": "./dist/react.js"
+      },
+      "require": {
+        "types": "./dist/react.d.cts",
+        "default": "./dist/react.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -49,7 +59,9 @@
     "translation",
     "sdk",
     "openai-compatible",
-    "llama.cpp"
+    "llama.cpp",
+    "react",
+    "react-hooks"
   ],
   "repository": {
     "type": "git",
@@ -61,8 +73,28 @@
   "engines": {
     "node": ">=18.18"
   },
+  "typesVersions": {
+    "*": {
+      "react": [
+        "./dist/react.d.ts"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
+    "jsdom": "^25.0.1",
+    "react": "^19.1.10",
+    "react-dom": "^19.1.10",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"

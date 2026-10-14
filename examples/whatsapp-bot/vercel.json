@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "cd ../.. && npm install && npm run build:sdk && cd examples/whatsapp-bot && npm install",
+  "buildCommand": "npm run typecheck",
+  "framework": null
+}

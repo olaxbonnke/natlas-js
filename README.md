@@ -18,9 +18,29 @@ Yorùbá · Hausa · Igbo · Nigerian English
 | Part | Path | What you get |
 |---|---|---|
 | **SDK** | [`packages/natlas`](packages/natlas) | `natlas-js` npm package: `chat()`, `chatStream()`, `translate()`, language helpers, typed errors, retries, CLI. ESM + CJS, zero runtime deps. |
+| **React hooks** | [`packages/natlas`](packages/natlas#react) | `@olaxbonnke/natlas-js/react`: `useNatlas()` streaming chat state and `useTranslate()`. SSR-safe, `"use client"`, optional peer dep. |
+| **Bot examples** | [`examples/whatsapp-bot`](examples/whatsapp-bot), [`examples/telegram-bot`](examples/telegram-bot) | WhatsApp Cloud API webhook bot (Vercel or any Node host) and a long-polling Telegram bot, with `/lang`, `/translate`, per-user memory. |
 | **Playground** | [`apps/playground`](apps/playground) | Next.js app (Vercel free tier): streaming chat, translation, language picker, Yoruba/Hausa/Igbo samples, live code snippets. |
 | **Free server** | [`server`](server) | Kaggle/Colab notebook: llama.cpp + CUDA on a T4, OpenAI-compatible API, public HTTPS URL via a Cloudflare quick tunnel. |
 | **Docs** | [`docs`](docs) | Technical documentation (Markdown + PDF): architecture, API reference, deployment, limitations, evaluation plan. |
+
+## Features
+
+- **SDK**: `chat()`, `chatStream()` (SSE as an async iterator), `translate()` / `translateStream()` with orthography-aware
+  prompts, typed errors, timeouts, retries, `health()`, CLI. Zero runtime dependencies, ESM + CJS, strict TypeScript.
+- **React hook**: `useNatlas()` gives you `messages`, `send`, `translate`, `isLoading`, `isStreaming`, `error`, `stop` and
+  `reset` on top of streaming chat, plus `useTranslate()`. One import, `@olaxbonnke/natlas-js/react`:
+
+  ```tsx
+  const { messages, send, isStreaming, stop } = useNatlas({ baseUrl: "/api", replyIn: "ha" });
+  ```
+
+- **Chat bots in Nigerian languages**: a [WhatsApp bot](examples/whatsapp-bot) (Cloud API webhook, deploys to Vercel) and a
+  [Telegram bot](examples/telegram-bot) (long polling, streams replies by editing its message). Both support
+  `/lang yo|ha|ig|en`, `/translate yo Hello`, `/reset` and `/help`, and remember each user's conversation.
+  The Telegram bot is the quickest way to try N-ATLaS on a phone: a BotFather token and `npm run dev`.
+- **Playground**: streaming chat and translation UI with live code snippets.
+- **$0 server**: llama.cpp + N-ATLaS GGUF on a free Kaggle T4 behind a Cloudflare tunnel.
 
 ## Why (PS1: Developer Infrastructure)
 
@@ -185,7 +205,7 @@ natlas-js/
 ├── packages/natlas/        # natlas-js SDK (src, tests, tsup build, CLI)
 ├── apps/playground/        # Next.js 15 + Tailwind playground (Vercel)
 ├── server/                 # Kaggle/Colab notebook (.ipynb + .py) and beginner guide
-├── examples/               # runnable SDK examples + eval/ harness
+├── examples/               # runnable SDK examples, whatsapp-bot/, telegram-bot/, eval/ harness
 ├── docs/                   # TECHNICAL_DOCUMENTATION.md + PDF
 └── scripts/                # mock server (dev only), notebook + PDF builders
 ```
@@ -194,7 +214,10 @@ natlas-js/
 
 ```bash
 npm install
-npm test            # SDK unit tests (vitest, mocked fetch)
+npm test            # SDK unit tests incl. React hooks (vitest, mocked fetch)
+npm run typecheck   # strict tsc for the SDK
+npm run test:examples       # bot command-parser / webhook tests
+npm run typecheck:examples  # strict tsc for both bots
 npm run build       # SDK (ESM+CJS+d.ts) then playground (next build)
 npm run docs:pdf    # rebuild docs/natlas-js-technical-documentation.pdf
 ```
@@ -203,7 +226,8 @@ npm run docs:pdf    # rebuild docs/natlas-js-technical-documentation.pdf
 
 - [ ] Publish `natlas-js` to npm with provenance; GitHub Actions CI
 - [ ] Python twin (`natlas-py`) with the same API
-- [ ] React hooks package (`useNAtlasChat`, `useTranslate`)
+- [x] React hooks (`useNatlas`, `useTranslate`) at `@olaxbonnke/natlas-js/react`
+- [x] WhatsApp and Telegram bot examples
 - [ ] N-ATLaS ASR models (speech-to-text for Yoruba, Hausa, Igbo, Nigerian English) behind the same SDK
 - [ ] Tool calling / JSON mode once validated on N-ATLaS
 - [ ] Published human evaluation by fluent speakers using `examples/eval`

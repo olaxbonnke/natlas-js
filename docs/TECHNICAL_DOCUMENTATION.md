@@ -240,6 +240,34 @@ for await (const c of natlas.chatStream("Menene amfanin noman rani?", { replyIn:
 const { text } = await natlas.translate("Wash your hands before eating.", { from: "en", to: "ig", domain: "health" });
 ```
 
+## React hooks
+
+`@olaxbonnke/natlas-js/react` (React 18+ as an optional peer dependency) wraps `chatStream()` and `translate()` as React state.
+
+```tsx
+"use client";
+import { useNatlas, useTranslate } from "@olaxbonnke/natlas-js/react";
+
+const { messages, send, translate, isLoading, isStreaming, error, stop, reset } = useNatlas({ baseUrl: "/api", replyIn: "yo" });
+const { translation, translate: tr } = useTranslate({ baseUrl: "/api", defaults: { to: "ha" }, stream: true });
+```
+
+`send()` appends the user turn, streams the assistant reply into `messages` and sends the full history on each turn.
+`stop()` aborts through an `AbortController` and keeps the partial reply; `error` holds the typed `NAtlasError`. The client
+is created lazily on first use (never during render), so the hooks are safe under server rendering; the build keeps the
+`"use client"` directive, and the React entry imports the core by package name so apps bundle one copy of the SDK.
+
+## Bot examples
+
+`examples/whatsapp-bot` is a WhatsApp Cloud API webhook (web-standard `Request -> Response` handler, deployable as a Vercel
+function or a plain `node:http` server): `GET` answers Meta's verification challenge, `POST` replies to incoming text via
+the Graph API, with optional `X-Hub-Signature-256` verification and de-duplication of re-delivered messages.
+`examples/telegram-bot` long-polls the Bot API over `fetch` and streams replies by editing its message. Both share the same
+transport-agnostic core: per-user in-memory conversation history (last 10 turns, 6 h TTL) and the commands `/help`,
+`/lang <en|yo|ha|ig|off>`, `/translate <to|from:to> <text>` and `/reset`. Environment: `WHATSAPP_TOKEN`,
+`WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN` (WhatsApp) or `TELEGRAM_BOT_TOKEN` (Telegram), plus `NATLAS_BASE_URL`
+and `NATLAS_API_KEY`.
+
 # Prompting
 
 ## Default system prompt

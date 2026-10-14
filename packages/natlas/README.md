@@ -9,6 +9,7 @@ Zero-dependency TypeScript SDK for **N-ATLaS**, Nigeria's multilingual large lan
 - typed errors, per-request timeouts, automatic retries with back-off, `health()` probe
 - works in Node 18+, browsers, Deno, Bun, Vercel/Cloudflare edge (uses the platform `fetch`)
 - ESM + CommonJS + `.d.ts`; a small CLI
+- optional React hooks: `useNatlas()` and `useTranslate()` from `@olaxbonnke/natlas-js/react`
 
 It talks to any **OpenAI-compatible** N-ATLaS server: llama.cpp `llama-server`, llama-cpp-python, vLLM.
 The repo's [`server/`](../../server) folder runs one for free on a Kaggle T4 GPU behind a Cloudflare quick tunnel.
@@ -42,6 +43,70 @@ const { text } = await natlas.translate("Wash your hands before eating.", { from
 ```
 
 CommonJS: `const { NAtlas } = require("@olaxbonnke/natlas-js");`
+
+## React
+
+```bash
+npm install @olaxbonnke/natlas-js react   # react >= 18 is an optional peer dependency
+```
+
+```tsx
+"use client";
+import { useNatlas } from "@olaxbonnke/natlas-js/react";
+
+export function Chat() {
+  const { messages, send, isLoading, isStreaming, error, stop, reset } = useNatlas({
+    baseUrl: "/api",   // your N-ATLaS server or a same-origin relay
+    replyIn: "yo",      // optional: always answer in Yoruba
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); const f = new FormData(e.currentTarget); send(String(f.get("q"))); e.currentTarget.reset(); }}>
+      {messages.map((m, i) => <p key={i}><b>{m.role}:</b> {m.content}</p>)}
+      {error && <p role="alert">{error.message}</p>}
+      <input name="q" placeholder="Báwo ni?" />
+      <button disabled={isLoading}>Send</button>
+      {isStreaming && <button type="button" onClick={stop}>Stop</button>}
+      <button type="button" onClick={reset}>New chat</button>
+    </form>
+  );
+}
+```
+
+### `useNatlas(options?)`
+
+Built on `chatStream()`: the last assistant message grows token by token.
+
+| Returns | |
+|---|---|
+| `messages` | `ChatMessage[]` (user and assistant turns; the system prompt is added per request) |
+| `send(text, chatOptions?)` | Appends the user turn, streams the reply, sends the whole history. Resolves with the reply text (partial if stopped) or `undefined` on error. A new `send` aborts the previous one. |
+| `translate(text, { to, from?, domain?, tone? })` | Calls `translate()` without touching `messages`. |
+| `isLoading` / `isStreaming` | Request in flight / first token received. |
+| `error` | The last `NAtlasError` (typed: `NAtlasConnectionError`, `NAtlasAuthError`, ...), cleared on the next request. |
+| `stop()` | Aborts the request (`AbortController`); text streamed so far is kept, no error is set. |
+| `reset()` | Aborts and restores `initialMessages`. |
+| `setMessages(list)` | Replace the history (edit, trim, restore). |
+
+Options: every `new NAtlas()` option (`baseUrl`, `apiKey`, `model`, `timeoutMs`, `fetch`, ...) **or** `client` (an existing `NAtlas`),
+plus `initialMessages`, `replyIn`, `chatOptions` (defaults for every `send`), and `onToken`, `onFinish`, `onError` callbacks.
+
+### `useTranslate(options?)`
+
+```tsx
+const { translation, translate, isLoading, error, stop, reset } = useTranslate({ baseUrl: "/api", defaults: { to: "ha" }, stream: true });
+await translate("Wash your hands before eating.");          // translation fills in as it streams
+await translate("Good morning", { from: "en", to: "ig" });  // per-call overrides
+```
+
+Notes:
+
+- **SSR-safe.** The client is created lazily on the first `send()`/`translate()`, never during render, so server rendering
+  works even when `baseUrl` is only known in the browser. Requests in flight are aborted on unmount.
+- **`"use client"`** is kept at the top of `dist/react.js` / `dist/react.cjs`, so the hooks drop straight into Next.js App Router.
+- **Tree-shakeable.** The core entry never imports React; the `react` entry imports the core by package name, so your app
+  ships one copy of `NAtlas`. `sideEffects: false`.
+- Don't put a private `apiKey` in browser code: point `baseUrl` at a server route that adds it (like the playground's relay).
 
 ## CLI
 

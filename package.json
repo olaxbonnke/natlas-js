@@ -15,7 +15,9 @@
     "test": "npm run test -w @olaxbonnke/natlas-js",
     "typecheck": "npm run typecheck -w @olaxbonnke/natlas-js",
     "dev": "npm run build:sdk && npm run dev -w natlas-playground",
-    "docs:pdf": "bash scripts/build-docs.sh"
+    "docs:pdf": "bash scripts/build-docs.sh",
+    "test:examples": "cd examples/whatsapp-bot && vitest run && cd ../telegram-bot && vitest run",
+    "typecheck:examples": "tsc -p examples/whatsapp-bot --noEmit && tsc -p examples/telegram-bot --noEmit"
   },
   "engines": {
     "node": ">=18.18"
